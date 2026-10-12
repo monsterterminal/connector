@@ -4,8 +4,21 @@ Il connettore di MonsterTerminal: un piccolo programma installato sull'host del 
 connessione in uscita verso MonsterTerminal, registra l'host e lascia lavorare tmux e gli agenti AI
 anche quando il collegamento cade.
 
-> Stato: **preparazione**. Il codice del connettore non è ancora scritto. Il repository contiene gli
-> schemi del protocollo e la struttura di partenza.
+> Stato: **prima fetta**. Registrazione dell'host e collegamento in uscita con heartbeat, ricollegamento,
+> revoca e kill-switch. Non ci sono ancora terminale, eventi degli agenti, catalogo né aggiornamenti.
+
+## Uso
+
+```
+# registrazione: il token di installazione si passa per variabile d'ambiente o standard input,
+# mai come argomento (comparirebbe nell'elenco dei processi)
+MONSTERTERMINAL_INSTALL_TOKEN=mti_… monsterterminal-connector register
+# collegamento
+monsterterminal-connector run
+```
+
+Opzioni comuni: `-server` (default `https://connect.monsterterminal.com`) e `-token-file` (default
+`/etc/monsterterminal/host-token`, scritto con permessi `0600`).
 
 ## Riferimenti
 
@@ -36,16 +49,19 @@ anche quando il collegamento cade.
 | `schemas/<versione>/` | JSON Schema del protocollo, fonte unica del contratto |
 | `packaging/` | servizio systemd e script di installazione |
 
-Le cartelle si creano quando arriva il codice che ci va dentro.
+Le cartelle si creano quando arriva il codice che ci va dentro. Oggi esistono `cmd/monsterterminal-connector`,
+`internal/protocol`, `internal/register`, `internal/transport`, `internal/hostinfo` e `internal/fakeserver`,
+un backend finto che parla il protocollo 0.1.0 e serve solo ai test.
 
-## Verifica degli schemi
+## Test
 
 ```
-go test ./...
+go test -race ./...
 ```
 
-Il test controlla che ogni schema sia JSON valido, chiuso, con un `$id` coerente col percorso e con
-riferimenti che puntano a definizioni esistenti.
+I test degli schemi controllano che ogni schema sia JSON valido, chiuso, con un `$id` coerente col
+percorso e riferimenti risolti. I test del codice girano contro il backend finto su TLS: registrazione,
+collegamento, caduta e ricollegamento, revoca, kill-switch, heartbeat, certificato non fidato.
 
 ## Licenza
 
