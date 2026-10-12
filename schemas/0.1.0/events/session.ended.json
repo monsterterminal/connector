@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.1.0/events/session.ended.json",
+  "title": "session.ended",
+  "description": "Sessione tmux terminata (§1.8). Schema del campo data del messaggio event.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "session": {
+      "$ref": "../common.json#/$defs/sessionName"
+    },
+    "exitReason": {
+      "type": "string",
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "session",
+    "exitReason"
+  ]
+}
