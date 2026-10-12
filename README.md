@@ -49,4 +49,4 @@ riferimenti che puntano a definizioni esistenti.
 
 ## Licenza
 
-Da decidere: vedi la proposta nel riepilogo della sessione di preparazione.
+Apache License 2.0: vedi [`LICENSE`](LICENSE) e [`NOTICE`](NOTICE).
