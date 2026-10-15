@@ -5,6 +5,7 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,6 +81,10 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/backend-to-connector/config.update.json", ConfigUpdate{}},
 		{"messages/connector-to-backend/error.json", nil}, // corpo = errorBody, verificato sotto
 		{"objects/host-config.json", HostConfig{}},
+		{"messages/connector-to-backend/event.json", Event{Seq: 1, Kind: "x", At: "x", Data: json.RawMessage(`{}`)}},
+		{"messages/backend-to-connector/events.ack.json", EventsAck{}},
+		{"events/connector.restarted.json", ConnectorRestarted{}},
+		{"events/journal.truncated.json", JournalTruncated{}},
 	}
 	for _, c := range cases {
 		if c.value == nil {
@@ -95,6 +100,11 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	eb := common["$defs"].(map[string]any)["errorBody"].(map[string]any)
 	if got, want := jsonKeys(t, ErrorBody{}), keys(eb["properties"].(map[string]any)); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("errorBody: campi Go %v, schema %v", got, want)
+	}
+	// I motivi del riavvio sono l'enum dello schema, nello stesso ordine.
+	rr := readSchema(t, "events/connector.restarted.json")["properties"].(map[string]any)["reason"].(map[string]any)["enum"].([]any)
+	if fmt.Sprint(rr) != fmt.Sprint(RestartReasons) {
+		t.Errorf("motivi del riavvio: Go %v, schema %v", RestartReasons, rr)
 	}
 	if Version != 1 || SchemaVersion != "0.1.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
