@@ -4,8 +4,10 @@ Il connettore di MonsterTerminal: un piccolo programma installato sull'host del 
 connessione in uscita verso MonsterTerminal, registra l'host e lascia lavorare tmux e gli agenti AI
 anche quando il collegamento cade.
 
-> Stato: **prima fetta**. Registrazione dell'host e collegamento in uscita con heartbeat, ricollegamento,
-> revoca e kill-switch. Non ci sono ancora terminale, eventi degli agenti, catalogo né aggiornamenti.
+> Stato: **seconda fetta**, allineata al gateway vero (ADR 0409, verbale 2026-10-13). Registrazione e
+> sostituzione dell'host, collegamento in uscita con heartbeat, ricollegamento, revoca e kill-switch,
+> giornale degli eventi con conferme del backend. Unico evento prodotto oggi: `connector.restarted`.
+> Non ci sono ancora terminale, eventi degli agenti, catalogo né aggiornamenti.
 
 ## Uso
 
@@ -13,12 +15,34 @@ anche quando il collegamento cade.
 # registrazione: il token di installazione si passa per variabile d'ambiente o standard input,
 # mai come argomento (comparirebbe nell'elenco dei processi)
 MONSTERTERMINAL_INSTALL_TOKEN=mti_… monsterterminal-connector register
+# sostituzione dell'host registrato su questa macchina (reinstallazione): il token attuale va al
+# backend nell'header X-MonsterTerminal-Host-Token, il vecchio host viene revocato
+MONSTERTERMINAL_INSTALL_TOKEN=mti_… monsterterminal-connector register -replace
 # collegamento
 monsterterminal-connector run
 ```
 
-Opzioni comuni: `-server` (default `https://connect.monsterterminal.com`) e `-token-file` (default
-`/etc/monsterterminal/host-token`, scritto con permessi `0600`).
+Opzioni comuni: `-server` (default `https://connect.monsterterminal.com`), `-token-file` (default
+`/etc/monsterterminal/host-token`, scritto con permessi `0600`) e `-state-dir` (default
+`/var/lib/monsterterminal`: giornale degli eventi e stato dell'ultimo avvio, cartelle `0700`).
+
+Codici di uscita: `0` fine regolare, `1` errore, `2` uso sbagliato, `3` host revocato o token dell'host
+non valido — ricollegarsi non serve, occorre una nuova registrazione, e il servizio non va riavviato.
+
+## Comportamento verso il gateway
+
+- **Registrazione** (§1.3): un rifiuto `400 BODY_INVALID` o `403 HOST_DISABLED` (macchina fermata dal
+  kill-switch) non consuma il token di installazione; il messaggio d'errore dice cosa fare.
+- **Giornale** (§1.12): ogni evento si scrive sul disco prima di partire, con seq crescente; il
+  backend conferma con `events.ack` e fa fede il suo segnalibro. Se il backend è indietro (`ACK_AHEAD`
+  o un `events.ack` più basso) il giornale riallinea e dichiara gli eventi persi con un
+  `journal.truncated` coerente. Tetto 10.000 eventi o 7 giorni: oltre, i più vecchi diventano un
+  `journal.truncated`. `SEQ_GAP` e `TRUNCATION_INCOHERENT` chiudono la sessione: il ricollegamento
+  riparte da `hello` e riallinea.
+- **Invio dosato** (§1.17): al più 40 messaggi al secondo con raffica di 5 (45 nel secondo peggiore,
+  il backend chiude a 50) e 32 eventi in volo (la coda del backend è 64).
+- **Rifiuti transitori**: `429 RATE_LIMITED` e `503 UNAVAILABLE` all'upgrade non si ritentano prima del
+  `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale.
 
 ## Riferimenti
 
@@ -50,8 +74,9 @@ Opzioni comuni: `-server` (default `https://connect.monsterterminal.com`) e `-to
 | `packaging/` | servizio systemd e script di installazione |
 
 Le cartelle si creano quando arriva il codice che ci va dentro. Oggi esistono `cmd/monsterterminal-connector`,
-`internal/protocol`, `internal/register`, `internal/transport`, `internal/hostinfo` e `internal/fakeserver`,
-un backend finto che parla il protocollo 0.1.0 e serve solo ai test.
+`internal/protocol`, `internal/register`, `internal/transport`, `internal/journal`, `internal/hostinfo` e
+`internal/fakeserver`, un backend finto che parla il protocollo 0.1.0 come il gateway vero e serve solo
+ai test.
 
 ## Test
 
@@ -60,8 +85,10 @@ go test -race ./...
 ```
 
 I test degli schemi controllano che ogni schema sia JSON valido, chiuso, con un `$id` coerente col
-percorso e riferimenti risolti. I test del codice girano contro il backend finto su TLS: registrazione,
-collegamento, caduta e ricollegamento, revoca, kill-switch, heartbeat, certificato non fidato.
+percorso e riferimenti risolti. I test del codice girano contro il backend finto su TLS: registrazione e
+sostituzione, collegamento, caduta e ricollegamento, revoca, kill-switch, heartbeat, certificato non
+fidato, consegna e riallineamento degli eventi, troncamenti, limiti di invio, 429/503/1011, e il
+cablaggio del comando in `cmd/`.
 
 ## Licenza
 
