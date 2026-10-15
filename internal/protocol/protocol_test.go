@@ -85,6 +85,13 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/backend-to-connector/events.ack.json", EventsAck{}},
 		{"events/connector.restarted.json", ConnectorRestarted{}},
 		{"events/journal.truncated.json", JournalTruncated{}},
+		{"messages/backend-to-connector/session.open.json", SessionOpen{}},
+		{"messages/backend-to-connector/session.resize.json", SessionResize{}},
+		{"messages/backend-to-connector/session.close.json", SessionClose{}},
+		{"messages/backend-to-connector/sessions.list.json", struct{}{}},
+		{"messages/connector-to-backend/session.opened.json", SessionOpened{}},
+		{"messages/connector-to-backend/session.closed.json", SessionClosed{}},
+		{"messages/connector-to-backend/sessions.list.result.json", SessionsListResult{}},
 	}
 	for _, c := range cases {
 		if c.value == nil {
@@ -105,6 +112,34 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	rr := readSchema(t, "events/connector.restarted.json")["properties"].(map[string]any)["reason"].(map[string]any)["enum"].([]any)
 	if fmt.Sprint(rr) != fmt.Sprint(RestartReasons) {
 		t.Errorf("motivi del riavvio: Go %v, schema %v", RestartReasons, rr)
+	}
+	// Voce di sessions.list.result: tutti i campi, opzionali compresi.
+	items := readSchema(t, "messages/connector-to-backend/sessions.list.result.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)["sessions"].(map[string]any)["items"].(map[string]any)
+	full := SessionInfo{Name: "a", CreatedAt: "x", Windows: 1, Agent: "claude-code", State: "lavora"}
+	if got, want := jsonKeys(t, full), keys(items["properties"].(map[string]any)); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("voce di sessions.list.result: Go %v, schema %v", got, want)
+	}
+	if mx := int(readSchema(t, "messages/connector-to-backend/sessions.list.result.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)["sessions"].(map[string]any)["maxItems"].(float64)); mx != MaxSessionsListed {
+		t.Errorf("maxItems %d, Go %d", mx, MaxSessionsListed)
+	}
+	// Motivi di chiusura, modi e regola dei nomi: quelli dello schema.
+	cr := readSchema(t, "messages/connector-to-backend/session.closed.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)["reason"].(map[string]any)["enum"].([]any)
+	if fmt.Sprint(cr) != fmt.Sprint(ClosedReasons) {
+		t.Errorf("motivi di chiusura: Go %v, schema %v", ClosedReasons, cr)
+	}
+	op := readSchema(t, "messages/backend-to-connector/session.open.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)
+	if fmt.Sprint(op["mode"].(map[string]any)["enum"]) != fmt.Sprint([]string{ModeView, ModeInteract}) {
+		t.Errorf("modi: schema %v", op["mode"])
+	}
+	if int(op["cols"].(map[string]any)["maximum"].(float64)) != MaxTerminalSize {
+		t.Errorf("dimensione massima: schema %v, Go %d", op["cols"], MaxTerminalSize)
+	}
+	defs := common["$defs"].(map[string]any)
+	if defs["sessionName"].(map[string]any)["pattern"].(string) != sessionNameRE.String() {
+		t.Errorf("regola dei nomi: schema %v, Go %s", defs["sessionName"], sessionNameRE)
+	}
+	if int64(defs["channel"].(map[string]any)["maximum"].(float64)) != 1<<32-1 {
+		t.Errorf("canale: schema %v, Go uint32", defs["channel"])
 	}
 	if Version != 1 || SchemaVersion != "0.1.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
@@ -158,4 +193,53 @@ func jsonKeys(t *testing.T, v any) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// §1.7: frame binari con intestazione di 5 byte, canale big-endian.
+func TestFrameBinari(t *testing.T) {
+	f := EncodeFrame(FrameOutput, 0x01020304, []byte("ciao"))
+	if fmt.Sprintf("% x", f[:5]) != "01 01 02 03 04" || string(f[5:]) != "ciao" {
+		t.Fatalf("frame % x", f)
+	}
+	typ, ch, data, err := DecodeFrame(EncodeFrame(FrameInput, 4294967295, nil))
+	if err != nil || typ != FrameInput || ch != 4294967295 || len(data) != 0 {
+		t.Fatalf("decodifica: %x %d %q %v", typ, ch, data, err)
+	}
+	for _, bad := range [][]byte{nil, {1, 0, 0, 0}, {3, 0, 0, 0, 1}} {
+		if _, _, _, err := DecodeFrame(bad); err == nil {
+			t.Errorf("frame % x accettato", bad)
+		}
+	}
+}
+
+func TestDecodeSessionOpen(t *testing.T) {
+	ok := `{"channel":7,"session":"lavoro.1","create":false,"mode":"view","cols":80,"rows":24}`
+	o, err := DecodeSessionOpen([]byte(ok))
+	if err != nil || o.Channel != 7 || o.Session != "lavoro.1" || o.Mode != ModeView {
+		t.Fatalf("%+v %v", o, err)
+	}
+	if _, err := DecodeSessionOpen([]byte(`{"channel":7,"session":"-x","create":false,"mode":"view","cols":80,"rows":24}`)); !errors.Is(err, ErrSessionName) {
+		t.Errorf("nome fuori regola: %v", err)
+	}
+	for _, bad := range []string{
+		`{"channel":7,"session":"a","create":false,"mode":"edit","cols":80,"rows":24}`,
+		`{"channel":7,"session":"a","create":false,"mode":"view","cols":0,"rows":24}`,
+		`{"channel":7,"session":"a","create":false,"mode":"view","cols":80,"rows":1001}`,
+		`{"channel":7,"session":"a","mode":"view","cols":80,"rows":24}`,
+		`{"channel":-1,"session":"a","create":false,"mode":"view","cols":80,"rows":24}`,
+		`{"channel":7,"session":"a","create":false,"mode":"view","cols":80,"rows":24,"x":1}`,
+	} {
+		if _, err := DecodeSessionOpen([]byte(bad)); err == nil || errors.Is(err, ErrSessionName) {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	if _, err := DecodeSessionResize([]byte(`{"channel":1,"cols":10}`)); err == nil {
+		t.Error("resize senza rows accettato")
+	}
+	if _, err := DecodeSessionClose([]byte(`{}`)); err == nil {
+		t.Error("close senza canale accettato")
+	}
+	if err := DecodeSessionsList([]byte(`{"x":1}`)); err == nil {
+		t.Error("sessions.list con campi accettato")
+	}
 }
