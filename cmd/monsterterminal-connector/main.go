@@ -19,8 +19,15 @@ import (
 	"syscall"
 )
 
+// devVersion è la versione delle compilazioni senza -ldflags: una pre-release della patch che segue
+// la minima accettata dal backend (MIN_CONNECTOR_VERSION = 0.1.0, §1.15). «0.1.0-dev» sarebbe la
+// forma naturale ma in semver precede 0.1.0, e il backend la rifiuta con 426 CONNECTOR_TOO_OLD
+// (prova dal vivo del 15/10); «0.1.0+dev» non passa lo schema common.json#semver, che non ammette
+// metadati di build. Quando il backend alza la minima, devVersion la segue (lo verifica un test).
+const devVersion = "0.1.1-dev"
+
 // version si imposta in compilazione con -ldflags "-X main.version=…".
-var version = "0.1.0-dev"
+var version = devVersion
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

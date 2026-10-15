@@ -65,6 +65,10 @@ type Server struct {
 	HelloTimeout time.Duration
 	// ExtraRegisterField aggiunge un campo sconosciuto alla risposta di registrazione.
 	ExtraRegisterField bool
+	// MinConnectorVersion, se impostata, rifiuta con 426 CONNECTOR_TOO_OLD le registrazioni sotto
+	// questa versione secondo CompareVersion (§1.15); il token non si consuma.
+	MinConnectorVersion string
+	CompareVersion      func(a, b string) int
 	// AckDelay rallenta l'elaborazione di ogni evento accettato prima dell'ack, come un DB lento:
 	// gli eventi successivi restano in volo.
 	AckDelay time.Duration
@@ -329,6 +333,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&info); err != nil || info.MachineID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "BODY_INVALID"})
+		return
+	}
+	if s.MinConnectorVersion != "" && s.CompareVersion != nil && s.CompareVersion(info.ConnectorVersion, s.MinConnectorVersion) < 0 {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"code": "CONNECTOR_TOO_OLD"})
 		return
 	}
 	current := r.Header.Get(HeaderCurrentHostToken)

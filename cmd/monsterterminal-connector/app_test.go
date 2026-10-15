@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -485,5 +486,95 @@ func TestRegistrazioneDiUnHostNuovoAzzeraIlGiornale(t *testing.T) {
 			stop()
 			waitExit(t, done)
 		})
+	}
+}
+
+// minBackendVersion è MIN_CONNECTOR_VERSION di apps/backend/src/modules/terminal/connector/
+// connector-hosts.service.ts (monorepo MonsterApp): la minima accettata alla registrazione.
+const minBackendVersion = "0.1.0"
+
+// backendCompareSemver riproduce compareSemver del backend (stesso file): il nucleo numerico, poi
+// «con pre-release» < «senza», senza guardare il contenuto della pre-release.
+func backendCompareSemver(a, b string) int {
+	parse := func(v string) ([3]int, bool) {
+		core, _, pre := strings.Cut(v, "-")
+		var n [3]int
+		for i, p := range strings.SplitN(core, ".", 3) {
+			n[i], _ = strconv.Atoi(p)
+		}
+		return n, pre
+	}
+	na, pa := parse(a)
+	nb, pb := parse(b)
+	for i := 0; i < 3; i++ {
+		if na[i] != nb[i] {
+			return na[i] - nb[i]
+		}
+	}
+	switch {
+	case pa == pb:
+		return 0
+	case pa:
+		return -1
+	}
+	return 1
+}
+
+// §1.15 e §1.20: una compilazione di sviluppo deve poter registrarsi sul backend vero. Il 15/10
+// «0.1.0-dev» ha ricevuto 426 CONNECTOR_TOO_OLD.
+func TestVersioneDiSviluppoAccettataDalBackend(t *testing.T) {
+	if !protocol.IsSemver(devVersion) {
+		t.Fatalf("%s non è una semver dello schema common.json", devVersion)
+	}
+	if backendCompareSemver(devVersion, minBackendVersion) < 0 {
+		t.Fatalf("%s è sotto la minima del backend %s: 426 CONNECTOR_TOO_OLD", devVersion, minBackendVersion)
+	}
+	if compareSemver(devVersion, minBackendVersion) < 0 {
+		t.Fatalf("%s precede %s anche in semver", devVersion, minBackendVersion)
+	}
+	// La controprova del motivo: la forma di prima è rifiutata.
+	if backendCompareSemver("0.1.0-dev", minBackendVersion) >= 0 {
+		t.Fatal("il confronto del backend riprodotto male: 0.1.0-dev dovrebbe essere sotto 0.1.0")
+	}
+}
+
+// Il server finto rifiuta come il backend: una versione sotto la minima riceve 426 e il messaggio
+// dice di aggiornare.
+func TestRegisterVersioneTroppoVecchia(t *testing.T) {
+	h := newHarness(t)
+	h.s.MinConnectorVersion = minBackendVersion
+	h.s.CompareVersion = backendCompareSemver
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	old := version
+	version = "0.1.0-dev"
+	defer func() { version = old }()
+	if code := h.register(t); code != exitError || !strings.Contains(h.stderr.String(), "CONNECTOR_TOO_OLD") || !strings.Contains(h.stderr.String(), "aggiornarlo") {
+		t.Fatalf("uscita %d, stderr %s", code, h.stderr.String())
+	}
+	if !h.s.InstallTokenUsable(installTok) {
+		t.Fatal("426 non deve consumare il token")
+	}
+	version = devVersion
+	if code := h.register(t); code != exitOK {
+		t.Fatalf("versione di sviluppo rifiutata: %d %s", code, h.stderr.String())
+	}
+}
+
+// La revoca si scrive nel log una volta sola (prima compariva due volte: dal trasporto e dal comando).
+func TestRevocaUnSoloMessaggio(t *testing.T) {
+	h := newHarness(t)
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	h.register(t)
+	id := hostIDFromStdout(t, h.stdout.String())
+	done, _ := h.start(t)
+	waitHello(t, h.s)
+	h.s.Revoke(id)
+	if code := waitExit(t, done); code != exitRevoked {
+		t.Fatalf("uscita %d", code)
+	}
+	if n := strings.Count(h.stderr.String(), "level=ERROR"); n != 1 {
+		t.Fatalf("%d messaggi di errore alla revoca, atteso 1:\n%s", n, h.stderr.String())
 	}
 }

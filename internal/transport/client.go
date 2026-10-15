@@ -168,7 +168,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		switch {
 		case errors.Is(err, ErrRevoked), errors.Is(err, ErrTokenInvalid):
-			cfg.Logger.Error("collegamento terminato in modo definitivo", "motivo", err.Error())
+			// Nessun log qui: l'errore torna al chiamante, che lo registra una volta sola.
 			return err
 		}
 		wait := cfg.Backoff.Next()
