@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -46,6 +47,11 @@ type host struct {
 	bookmark  int64
 	events    []protocol.Event
 	hits      []time.Time
+	// terminale (§1.7)
+	output  map[uint32][]byte
+	frames  []int // dimensione di ogni frame di output ricevuto
+	replies map[string]protocol.Envelope
+	closed  []protocol.SessionClosed
 }
 
 // Rejection è un rifiuto dell'upgrade preparato da un test.
@@ -69,6 +75,8 @@ type Server struct {
 	// questa versione secondo CompareVersion (§1.15); il token non si consuma.
 	MinConnectorVersion string
 	CompareVersion      func(a, b string) int
+	// MaxChannels è maxChannels della configurazione mandata in welcome; zero = 12.
+	MaxChannels int
 	// AckDelay rallenta l'elaborazione di ogni evento accettato prima dell'ack, come un DB lento:
 	// gli eventi successivi restano in volo.
 	AckDelay time.Duration
@@ -187,7 +195,7 @@ func (s *Server) addHostLocked(machineID string) (string, string) {
 	_, _ = rand.Read(b[:])
 	token := "mth_" + base64.RawURLEncoding.EncodeToString(b[:])
 	id := protocol.NewUUID()
-	s.hosts[hashToken(token)] = &host{id: id, machineID: machineID}
+	s.hosts[hashToken(token)] = &host{id: id, machineID: machineID, output: map[uint32][]byte{}, replies: map[string]protocol.Envelope{}}
 	return id, token
 }
 
@@ -471,7 +479,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	welcome := protocol.Welcome{
 		HostID: h.id, Protocol: protocol.Version, ServerTime: protocol.Timestamp(time.Now()),
-		Config: protocol.HostConfig{DefaultIdleThresholdSeconds: 300, SessionIdleThresholds: map[string]int{}, MaxChannels: 12},
+		Config: protocol.HostConfig{DefaultIdleThresholdSeconds: 300, SessionIdleThresholds: map[string]int{}, MaxChannels: s.maxChannels()},
 	}
 	send := func(typ, re string, body any) error {
 		frame, _, _ := protocol.Encode(typ, re, body, time.Now())
@@ -524,10 +532,30 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if typ != websocket.MessageText {
+			if ft, ch, payload, ferr := protocol.DecodeFrame(data); ferr == nil && ft == protocol.FrameOutput {
+				s.mu.Lock()
+				h.output[ch] = append(h.output[ch], payload...)
+				h.frames = append(h.frames, len(data))
+				s.mu.Unlock()
+			}
 			continue
 		}
 		env, err := protocol.DecodeEnvelope(data)
-		if err != nil || env.Type != protocol.TypeEvent {
+		if err != nil {
+			continue
+		}
+		if env.Type != protocol.TypeEvent {
+			s.mu.Lock()
+			if env.Re != "" {
+				h.replies[env.Re] = env
+			}
+			if env.Type == protocol.TypeSessionClosed {
+				var c protocol.SessionClosed
+				if json.Unmarshal(env.Body, &c) == nil {
+					h.closed = append(h.closed, c)
+				}
+			}
+			s.mu.Unlock()
 			continue
 		}
 		var ev protocol.Event
@@ -555,6 +583,89 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			_ = send(protocol.TypeEventsAck, env.ID, protocol.EventsAck{UpToSeq: upTo})
 		}
 	}
+}
+
+func (s *Server) maxChannels() int {
+	if s.MaxChannels > 0 {
+		return s.MaxChannels
+	}
+	return 12
+}
+
+func (s *Server) conn(hostID string) *websocket.Conn {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return h.conn
+	}
+	return nil
+}
+
+// SendControl manda un messaggio di controllo all'host collegato e ne restituisce l'id.
+func (s *Server) SendControl(hostID, typ string, body any) (string, error) {
+	c := s.conn(hostID)
+	if c == nil {
+		return "", errors.New("host non collegato")
+	}
+	frame, id, err := protocol.Encode(typ, "", body, time.Now())
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return id, c.Write(ctx, websocket.MessageText, frame)
+}
+
+// SendInput manda un frame di input (0x02) al canale.
+func (s *Server) SendInput(hostID string, ch uint32, data []byte) error {
+	c := s.conn(hostID)
+	if c == nil {
+		return errors.New("host non collegato")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.Write(ctx, websocket.MessageBinary, protocol.EncodeFrame(protocol.FrameInput, ch, data))
+}
+
+// Reply restituisce la risposta del connettore al messaggio id, se è arrivata.
+func (s *Server) Reply(hostID, id string) (protocol.Envelope, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		e, ok := h.replies[id]
+		return e, ok
+	}
+	return protocol.Envelope{}, false
+}
+
+// Output è l'output ricevuto finora sul canale.
+func (s *Server) Output(hostID string, ch uint32) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]byte(nil), h.output[ch]...)
+	}
+	return nil
+}
+
+// OutputFrames sono le dimensioni dei frame di output ricevuti, intestazione compresa.
+func (s *Server) OutputFrames(hostID string) []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]int(nil), h.frames...)
+	}
+	return nil
+}
+
+// Closed sono i session.closed ricevuti dall'host.
+func (s *Server) Closed(hostID string) []protocol.SessionClosed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]protocol.SessionClosed(nil), h.closed...)
+	}
+	return nil
 }
 
 // hit applica il limite di 50 messaggi al secondo in finestra scorrevole (§1.17).

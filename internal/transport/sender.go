@@ -71,13 +71,18 @@ type writer struct {
 }
 
 func (w *writer) write(ctx context.Context, frame []byte) error {
+	return w.writeType(ctx, websocket.MessageText, frame)
+}
+
+// writeType scrive un frame di testo o binario: il limite del backend li conta tutti (§1.17).
+func (w *writer) writeType(ctx context.Context, typ websocket.MessageType, frame []byte) error {
 	if d := w.lim.reserve(); d > 0 {
 		if err := w.sleep(ctx, d); err != nil {
 			return err
 		}
 	}
 	w.sent.Add(1)
-	return w.conn.Write(ctx, websocket.MessageText, frame)
+	return w.conn.Write(ctx, typ, frame)
 }
 
 // syncState è lo stato del riallineamento col backend dopo welcome (§1.12: fa fede il backend).

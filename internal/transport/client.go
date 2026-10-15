@@ -96,6 +96,12 @@ type Config struct {
 	AckAheadWait time.Duration
 	// Limiti dell'invio (§1.17): messaggi al secondo, raffica, eventi in volo.
 	MaxRate, RateBurst, MaxInFlight int
+
+	// Terminal gestisce i canali del terminale (§1.7); nil = nessun terminale.
+	Terminal Terminal
+	// Coda dell'output del terminale: soglie della contropressione e accorpamento (§1.7).
+	OutputHighWater, OutputLowWater int
+	OutputFlushDelay                time.Duration
 }
 
 func (c *Config) defaults() {
@@ -134,6 +140,15 @@ func (c *Config) defaults() {
 	}
 	if c.MaxInFlight == 0 {
 		c.MaxInFlight = DefaultMaxInFlight
+	}
+	if c.OutputHighWater == 0 {
+		c.OutputHighWater = DefaultOutputHighWater
+	}
+	if c.OutputLowWater == 0 {
+		c.OutputLowWater = DefaultOutputLowWater
+	}
+	if c.OutputFlushDelay == 0 {
+		c.OutputFlushDelay = DefaultOutputFlushDelay
 	}
 }
 
@@ -213,9 +228,24 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 	defer conn.CloseNow()
 	conn.SetReadLimit(protocol.MaxFrameBytes)
 
-	sctx, cancel := context.WithCancel(ctx)
+	// La sessione NON eredita l'annullamento di ctx: con coder/websocket un Read il cui contesto viene
+	// annullato chiude subito la connessione, e allo spegnimento non si potrebbe più avvisare il backend.
+	// Lo spegnimento passa dall'osservatore qui sotto: prima i canali (session.closed
+	// «connector-shutdown»), poi la chiusura regolare 1000, poi la fine della sessione.
+	sctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	w := &writer{conn: conn, lim: newLimiter(cfg.MaxRate, cfg.RateBurst, cfg.Now), sleep: cfg.Sleep}
+	go func() {
+		select {
+		case <-sctx.Done():
+		case <-ctx.Done():
+			if cfg.Terminal != nil {
+				cfg.Terminal.Detach(true)
+			}
+			_ = conn.Close(websocket.StatusNormalClosure, "")
+			cancel()
+		}
+	}()
 
 	// Guardia dell'heartbeat: senza segnali oltre il tempo, chiude la connessione.
 	var heartbeatExpired atomic.Bool
@@ -277,6 +307,9 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 			}
 			welcomed = true
 			cfg.Logger.Info("collegato", "hostId", w.HostID, "protocollo", w.Protocol)
+			if cfg.Terminal != nil {
+				cfg.Terminal.SetMaxChannels(w.Config.MaxChannels)
+			}
 			if cfg.OnWelcome != nil {
 				cfg.OnWelcome(w)
 			}
@@ -286,6 +319,18 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		default:
 			return false, fmt.Errorf("messaggio %q prima di welcome: %w", env.Type, protocol.ErrInvalid)
 		}
+	}
+
+	if cfg.Terminal != nil {
+		q := newOutQueue(cfg.OutputHighWater, cfg.OutputLowWater, cfg.Now)
+		go flushOutput(sctx, cfg, w, q)
+		cfg.Terminal.Attach(&termOut{ctx: sctx, cfg: cfg, w: w, q: q})
+		// Prima della chiusura della connessione (i defer girano in ordine inverso): i canali si
+		// chiudono, le sessioni tmux restano. Se si ferma il connettore, il backend viene avvisato.
+		defer func() {
+			q.close()
+			cfg.Terminal.Detach(false) // caduta: nessuno da avvisare (allo spegnimento è già fatto)
+		}()
 	}
 
 	st := newSyncState()
@@ -312,7 +357,12 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		}
 		lastSignal.Store(cfg.Now().UnixNano())
 		if typ != websocket.MessageText {
-			// Nessun canale del terminale in questa fetta: i frame binari si scartano (§1.7).
+			// Frame binari (§1.7): solo l'input dell'utente va al terminale; il resto si scarta.
+			if cfg.Terminal != nil {
+				if ft, ch, payload, ferr := protocol.DecodeFrame(data); ferr == nil && ft == protocol.FrameInput {
+					cfg.Terminal.Input(ch, payload)
+				}
+			}
 			continue
 		}
 		if err := handleMessage(sctx, cfg, w, st, data); err != nil {
@@ -329,6 +379,9 @@ func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, d
 		reply(ctx, cfg, w, "", protocol.CodeMessageInvalid, err.Error())
 		return nil
 	}
+	if cfg.Terminal != nil && cfg.Terminal.Handle(env) {
+		return nil
+	}
 	switch env.Type {
 	case protocol.TypeConfigUpdate:
 		var u protocol.ConfigUpdate
@@ -339,6 +392,9 @@ func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, d
 		if err := u.Config.Validate(); err != nil {
 			reply(ctx, cfg, w, env.ID, protocol.CodeMessageInvalid, err.Error())
 			return nil
+		}
+		if cfg.Terminal != nil {
+			cfg.Terminal.SetMaxChannels(u.Config.MaxChannels)
 		}
 		if cfg.OnConfig != nil {
 			cfg.OnConfig(u.Config)
