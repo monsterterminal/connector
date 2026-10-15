@@ -1,7 +1,13 @@
 // Package fakeserver è un backend finto che parla il protocollo 0.1.0, SOLO per i test.
 //
-// Implementa la registrazione (§1.3), l'autenticazione dell'upgrade (§1.4), hello/welcome, i ping
-// dell'heartbeat (§1.2), una connessione per host (4409), la revoca (4401) e il kill-switch (4403).
+// Segue il gateway vero (monsterapp, ADR 0409, verbale 2026-10-13) dove il connettore se ne
+// accorge: registrazione col token di installazione monouso, NON consumato se il corpo non è
+// valido o la macchina è ferma (§1.3); sostituzione solo col token attuale nell'header
+// X-MonsterTerminal-Host-Token, stessa macchina (§1.3); kill-switch per macchina, 403 HOST_DISABLED
+// anche alla registrazione; autenticazione dell'upgrade (§1.4), hello/welcome, ping (§1.2), una
+// connessione per host (4409), revoca (4401), kill-switch (4403); giornale col segnalibro che fa
+// fede (§1.12: ACK_AHEAD, SEQ_GAP, TRUNCATION_INCOHERENT, troncamento coerente); 50 messaggi al
+// secondo per host (§1.17, 4429); rifiuti dell'upgrade 429 con Retry-After e 503; chiusura 1011.
 // Non va mai importato dal codice di produzione.
 package fakeserver
 
@@ -14,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,11 +31,28 @@ import (
 	"github.com/ciarasino/monsterterminal-connector/internal/register"
 )
 
+// HeaderCurrentHostToken è l'header con cui il connettore prova il possesso dell'host da sostituire.
+const HeaderCurrentHostToken = "X-MonsterTerminal-Host-Token"
+
+// RateLimit è il limite di messaggi al secondo per host del backend (§1.17).
+const RateLimit = 50
+
 type host struct {
-	id       string
-	revoked  bool
-	disabled bool
-	conn     *websocket.Conn
+	id        string
+	machineID string
+	revoked   bool
+	disabled  bool
+	conn      *websocket.Conn
+	bookmark  int64
+	events    []protocol.Event
+	hits      []time.Time
+}
+
+// Rejection è un rifiuto dell'upgrade preparato da un test.
+type Rejection struct {
+	Status     int
+	Code       string
+	RetryAfter string // header Retry-After, vuoto = assente
 }
 
 // Server è il backend finto.
@@ -42,22 +66,29 @@ type Server struct {
 	// ExtraRegisterField aggiunge un campo sconosciuto alla risposta di registrazione.
 	ExtraRegisterField bool
 
-	mu            sync.Mutex
-	installTokens map[string]time.Time // token -> scadenza
-	hosts         map[string]*host     // sha256(token dell'host) -> host
-	registrations []register.Info
-	hellos        chan protocol.Hello
-	connects      int
-	silent        bool
+	mu              sync.Mutex
+	installTokens   map[string]time.Time // token -> scadenza
+	hosts           map[string]*host     // sha256(token dell'host) -> host
+	disabledMachine map[string]bool
+	registrations   []register.Info
+	replaceHeaders  []string
+	hellos          chan protocol.Hello
+	connects        int
+	upgrades        int
+	silent          bool
+	rejections      []Rejection
+	closeAfterEvent map[int64]websocket.StatusCode
 }
 
 // New avvia il server su TLS con certificato autofirmato.
 func New() *Server {
 	s := &Server{
-		installTokens: map[string]time.Time{},
-		hosts:         map[string]*host{},
-		hellos:        make(chan protocol.Hello, 64),
-		HelloTimeout:  10 * time.Second,
+		installTokens:   map[string]time.Time{},
+		hosts:           map[string]*host{},
+		disabledMachine: map[string]bool{},
+		closeAfterEvent: map[int64]websocket.StatusCode{},
+		hellos:          make(chan protocol.Hello, 64),
+		HelloTimeout:    10 * time.Second,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/register", s.handleRegister)
@@ -98,11 +129,26 @@ func (s *Server) AddInstallToken(tok string, ttl time.Duration) {
 	s.installTokens[tok] = time.Now().Add(ttl)
 }
 
-// Registrations restituisce i corpi di registrazione ricevuti.
+// InstallTokenUsable dice se il token di installazione è ancora utilizzabile (non consumato).
+func (s *Server) InstallTokenUsable(tok string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.installTokens[tok]
+	return ok && time.Now().Before(exp)
+}
+
+// Registrations restituisce i corpi di registrazione accettati.
 func (s *Server) Registrations() []register.Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]register.Info(nil), s.registrations...)
+}
+
+// ReplaceHeaders restituisce l'header della sostituzione di ogni registrazione ("" se assente).
+func (s *Server) ReplaceHeaders() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.replaceHeaders...)
 }
 
 // Hellos riceve ogni hello valido.
@@ -115,19 +161,26 @@ func (s *Server) Connects() int {
 	return s.connects
 }
 
+// Upgrades conta i tentativi di upgrade, rifiutati compresi.
+func (s *Server) Upgrades() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upgrades
+}
+
 // AddHost crea un host già registrato e ne restituisce il token.
 func (s *Server) AddHost() (hostID, token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.addHostLocked()
+	return s.addHostLocked("")
 }
 
-func (s *Server) addHostLocked() (string, string) {
+func (s *Server) addHostLocked(machineID string) (string, string) {
 	var b [32]byte
 	_, _ = rand.Read(b[:])
 	token := "mth_" + base64.RawURLEncoding.EncodeToString(b[:])
 	id := protocol.NewUUID()
-	s.hosts[hashToken(token)] = &host{id: id}
+	s.hosts[hashToken(token)] = &host{id: id, machineID: machineID}
 	return id, token
 }
 
@@ -142,6 +195,75 @@ func (s *Server) byID(id string) *host {
 	return nil
 }
 
+// HostRevoked dice se l'host è revocato.
+func (s *Server) HostRevoked(hostID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := s.byID(hostID)
+	return h != nil && h.revoked
+}
+
+// Bookmark è il segnalibro del backend per l'host: l'ultimo seq accettato.
+func (s *Server) Bookmark(hostID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return h.bookmark
+	}
+	return -1
+}
+
+// SetBookmark impone il segnalibro (per simulare un backend indietro, ACK_AHEAD).
+func (s *Server) SetBookmark(hostID string, n int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		h.bookmark = n
+	}
+}
+
+// Events restituisce gli eventi accettati per l'host, in ordine.
+func (s *Server) Events(hostID string) []protocol.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]protocol.Event(nil), h.events...)
+	}
+	return nil
+}
+
+// RejectUpgrades fa rifiutare i prossimi tentativi di upgrade, uno per elemento, nell'ordine.
+func (s *Server) RejectUpgrades(r ...Rejection) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejections = append(s.rejections, r...)
+}
+
+// CloseAfterEvent chiude la connessione con code dopo aver ACCETTATO l'evento seq, prima dell'ack:
+// l'evento è nel segnalibro ma il connettore non lo sa (caduta fra scrittura e conferma).
+func (s *Server) CloseAfterEvent(seq int64, code websocket.StatusCode) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeAfterEvent[seq] = code
+}
+
+// DisableMachine ferma la macchina col kill-switch: chiude i suoi host con 4403 e rifiuta anche le
+// registrazioni da quella macchina con 403 HOST_DISABLED.
+func (s *Server) DisableMachine(machineID string) {
+	s.mu.Lock()
+	s.disabledMachine[machineID] = true
+	var ids []string
+	for _, h := range s.hosts {
+		if h.machineID == machineID {
+			ids = append(ids, h.id)
+		}
+	}
+	s.mu.Unlock()
+	for _, id := range ids {
+		s.Disable(id)
+	}
+}
+
 // Drop chiude di colpo la connessione dell'host, senza codice: simula una caduta di rete.
 func (s *Server) Drop(hostID string) {
 	s.mu.Lock()
@@ -154,6 +276,11 @@ func (s *Server) Drop(hostID string) {
 	if c != nil {
 		c.CloseNow()
 	}
+}
+
+// CloseWith chiude la connessione dell'host con un codice qualsiasi (1011, 4429...).
+func (s *Server) CloseWith(hostID string, code websocket.StatusCode) {
+	s.closeWith(hostID, code, func(*host) {})
 }
 
 // Revoke revoca l'host: chiude con 4401 e rifiuta i tentativi successivi con 401 HOST_REVOKED.
@@ -189,28 +316,51 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	s.mu.Lock()
-	exp, ok := s.installTokens[tok]
-	if ok {
-		delete(s.installTokens, tok) // monouso, consumato anche se il corpo è sbagliato
-	}
-	s.mu.Unlock()
-	if !ok || time.Now().After(exp) {
+	// Il token prima del corpo, e NON si consuma finché la registrazione non riesce.
+	if !s.InstallTokenUsable(tok) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "INSTALL_TOKEN_INVALID"})
 		return
 	}
 	var info register.Info
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&info); err != nil {
+	if err := dec.Decode(&info); err != nil || info.MachineID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "BODY_INVALID"})
 		return
 	}
+	current := r.Header.Get(HeaderCurrentHostToken)
 	s.mu.Lock()
+	if s.disabledMachine[info.MachineID] {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "HOST_DISABLED"})
+		return
+	}
+	if !s.consumeLocked(tok) {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "INSTALL_TOKEN_INVALID"})
+		return
+	}
 	s.registrations = append(s.registrations, info)
-	id, token := s.addHostLocked()
+	s.replaceHeaders = append(s.replaceHeaders, current)
+	// Sostituzione (§1.3): solo col token attuale di un host vivo della stessa macchina. Senza
+	// prova, o con una prova che non torna, l'host nuovo nasce accanto al vecchio.
+	var replaced *host
+	if current != "" {
+		if old := s.hosts[hashToken(current)]; old != nil && !old.revoked && old.machineID == info.MachineID {
+			old.revoked = true
+			replaced = old
+		}
+	}
+	id, token := s.addHostLocked(info.MachineID)
 	extra := s.ExtraRegisterField
+	var oldConn *websocket.Conn
+	if replaced != nil {
+		oldConn = replaced.conn
+	}
 	s.mu.Unlock()
+	if oldConn != nil {
+		_ = oldConn.Close(4401, "")
+	}
 	resp := map[string]any{"hostId": id, "hostToken": token, "tenantLabel": "Acme", "protocol": protocol.Version}
 	if extra {
 		resp["tenantId"] = "da-non-accettare"
@@ -218,9 +368,29 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+func (s *Server) consumeLocked(tok string) bool {
+	exp, ok := s.installTokens[tok]
+	if !ok || time.Now().After(exp) {
+		return false
+	}
+	delete(s.installTokens, tok)
+	return true
+}
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	s.mu.Lock()
+	s.upgrades++
+	if len(s.rejections) > 0 {
+		rej := s.rejections[0]
+		s.rejections = s.rejections[1:]
+		s.mu.Unlock()
+		if rej.RetryAfter != "" {
+			w.Header().Set("Retry-After", rej.RetryAfter)
+		}
+		writeJSON(w, rej.Status, map[string]string{"code": rej.Code})
+		return
+	}
 	h := s.hosts[hashToken(tok)]
 	switch {
 	case h == nil:
@@ -271,6 +441,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(4408, "")
 		return
 	}
+	if !s.hit(h) {
+		_ = conn.Close(4429, "")
+		return
+	}
 	env, err := protocol.DecodeEnvelope(data)
 	var hello protocol.Hello
 	if err == nil && typ == websocket.MessageText && env.Type == protocol.TypeHello {
@@ -288,9 +462,23 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		HostID: h.id, Protocol: protocol.Version, ServerTime: protocol.Timestamp(time.Now()),
 		Config: protocol.HostConfig{DefaultIdleThresholdSeconds: 300, SessionIdleThresholds: map[string]int{}, MaxChannels: 12},
 	}
-	frame, _, _ := protocol.Encode(protocol.TypeWelcome, env.ID, welcome, time.Now())
-	if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+	send := func(typ, re string, body any) error {
+		frame, _, _ := protocol.Encode(typ, re, body, time.Now())
+		return conn.Write(ctx, websocket.MessageText, frame)
+	}
+	if err := send(protocol.TypeWelcome, env.ID, welcome); err != nil {
 		return
+	}
+	// Fa fede il backend (§1.12), come onHello del gateway: ACK_AHEAD se il connettore è avanti,
+	// events.ack col segnalibro se differisce e non è zero.
+	s.mu.Lock()
+	bookmark := h.bookmark
+	s.mu.Unlock()
+	if hello.LastAckedSeq > bookmark {
+		_ = send(protocol.TypeError, env.ID, protocol.ErrorBody{Code: protocol.CodeAckAhead, Message: "lastAckedSeq oltre il segnalibro del backend"})
+	}
+	if hello.LastAckedSeq != bookmark && bookmark >= 1 {
+		_ = send(protocol.TypeEventsAck, "", protocol.EventsAck{UpToSeq: bookmark})
 	}
 
 	if s.PingInterval > 0 {
@@ -316,8 +504,84 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	for {
-		if _, _, err := conn.Read(ctx); err != nil {
+		typ, data, err := conn.Read(ctx)
+		if err != nil {
 			return
+		}
+		if !s.hit(h) {
+			_ = conn.Close(4429, "")
+			return
+		}
+		if typ != websocket.MessageText {
+			continue
+		}
+		env, err := protocol.DecodeEnvelope(data)
+		if err != nil || env.Type != protocol.TypeEvent {
+			continue
+		}
+		var ev protocol.Event
+		if err := protocol.DecodeStrict(env.Body, &ev); err != nil {
+			_ = send(protocol.TypeError, env.ID, protocol.ErrorBody{Code: protocol.CodeMessageInvalid, Message: err.Error()})
+			continue
+		}
+		code, upTo := s.ingest(h, ev)
+		if code != "" {
+			_ = send(protocol.TypeError, env.ID, protocol.ErrorBody{Code: code, Message: "evento rifiutato"})
+			continue
+		}
+		s.mu.Lock()
+		closeCode, closeNow := s.closeAfterEvent[ev.Seq]
+		delete(s.closeAfterEvent, ev.Seq)
+		s.mu.Unlock()
+		if closeNow {
+			_ = conn.Close(closeCode, "")
+			return
+		}
+		if upTo >= 1 {
+			_ = send(protocol.TypeEventsAck, env.ID, protocol.EventsAck{UpToSeq: upTo})
 		}
 	}
 }
+
+// hit applica il limite di 50 messaggi al secondo in finestra scorrevole (§1.17).
+func (s *Server) hit(h *host) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	cut := now.Add(-time.Second)
+	i := 0
+	for i < len(h.hits) && h.hits[i].Before(cut) {
+		i++
+	}
+	h.hits = append(h.hits[i:], now)
+	return len(h.hits) <= RateLimit
+}
+
+// ingest è classifyEvent del backend: codice di rifiuto ("" = accettato o duplicato) e segnalibro.
+func (s *Server) ingest(h *host, ev protocol.Event) (string, int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last := h.bookmark
+	if ev.Seq <= last {
+		return "", last
+	}
+	if ev.Kind == protocol.KindJournalTruncated {
+		var d protocol.JournalTruncated
+		if err := json.Unmarshal(ev.Data, &d); err != nil {
+			return protocol.CodeTruncationIncoherent, last
+		}
+		o, err1 := time.Parse(time.RFC3339Nano, d.OldestDroppedAt)
+		n, err2 := time.Parse(time.RFC3339Nano, d.NewestDroppedAt)
+		if err1 != nil || err2 != nil || d.DroppedCount != ev.Seq-last || d.FirstKeptSeq != ev.Seq+1 || o.After(n) {
+			return protocol.CodeTruncationIncoherent, last
+		}
+	} else if ev.Seq != last+1 {
+		return protocol.CodeSeqGap, last
+	}
+	h.bookmark = ev.Seq
+	h.events = append(h.events, ev)
+	return "", ev.Seq
+}
+
+// RetryAfter formatta i secondi per Rejection.RetryAfter.
+func RetryAfter(d time.Duration) string { return strconv.Itoa(int(d / time.Second)) }

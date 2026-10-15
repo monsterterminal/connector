@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,8 @@ const (
 	CloseNoHello  websocket.StatusCode = 4408
 	CloseReplaced websocket.StatusCode = 4409
 	CloseTooMany  websocket.StatusCode = 4429
+	// CloseInternal: errore del backend mentre elaborava un messaggio (§1.4); si ritenta col backoff.
+	CloseInternal websocket.StatusCode = 1011
 )
 
 // DisabledMinWait è l'attesa minima dopo un kill-switch (§1.12, §1.13).
@@ -42,6 +45,24 @@ var (
 	errDisabled  = errors.New("host fermato dal kill-switch")
 	errHeartbeat = errors.New("nessun segnale dal backend entro il tempo dell'heartbeat")
 )
+
+// retryAfterError: il backend ha risposto 429 RATE_LIMITED con Retry-After (§1.17). L'attesa
+// prima del prossimo tentativo non è mai più corta di quella indicata.
+type retryAfterError struct {
+	after time.Duration
+	err   error
+}
+
+func (e *retryAfterError) Error() string {
+	return fmt.Sprintf("troppi tentativi, riprovare fra %s: %v", e.after, e.err)
+}
+func (e *retryAfterError) Unwrap() error { return e.err }
+
+// sessionError: il backend ha rifiutato un evento (SEQ_GAP, TRUNCATION_INCOHERENT). La
+// connessione si chiude e il ricollegamento riparte da hello, che riallinea i segnalibri.
+type sessionError struct{ code string }
+
+func (e *sessionError) Error() string { return "evento rifiutato dal backend: " + e.code }
 
 // Config configura il client.
 type Config struct {
@@ -66,6 +87,15 @@ type Config struct {
 	OnConfig func(protocol.HostConfig)
 	Logger   *slog.Logger
 	Now      func() time.Time
+
+	// Events è il giornale degli eventi da consegnare (§1.12); nil = nessun evento.
+	Events EventStore
+	// SyncGrace: attesa dopo welcome prima di inviare, per ricevere ACK_AHEAD o il segnalibro.
+	SyncGrace time.Duration
+	// AckAheadWait: dopo ACK_AHEAD, attesa massima dell'events.ack col segnalibro del backend.
+	AckAheadWait time.Duration
+	// Limiti dell'invio (§1.17): messaggi al secondo, raffica, eventi in volo.
+	MaxRate, RateBurst, MaxInFlight int
 }
 
 func (c *Config) defaults() {
@@ -89,6 +119,21 @@ func (c *Config) defaults() {
 	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = http.DefaultClient
+	}
+	if c.SyncGrace == 0 {
+		c.SyncGrace = time.Second
+	}
+	if c.AckAheadWait == 0 {
+		c.AckAheadWait = 3 * time.Second
+	}
+	if c.MaxRate == 0 {
+		c.MaxRate = DefaultMaxRate
+	}
+	if c.RateBurst == 0 {
+		c.RateBurst = DefaultRateBurst
+	}
+	if c.MaxInFlight == 0 {
+		c.MaxInFlight = DefaultMaxInFlight
 	}
 }
 
@@ -130,6 +175,10 @@ func Run(ctx context.Context, cfg Config) error {
 		if errors.Is(err, errDisabled) && wait < DisabledMinWait {
 			wait = DisabledMinWait
 		}
+		var ra *retryAfterError
+		if errors.As(err, &ra) && wait < ra.after {
+			wait = ra.after
+		}
 		cfg.Logger.Warn("collegamento caduto, nuovo tentativo", "motivo", errString(err), "attesa", wait.String())
 		if err := cfg.Sleep(ctx, wait); err != nil {
 			return err
@@ -166,6 +215,7 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	w := &writer{conn: conn, lim: newLimiter(cfg.MaxRate, cfg.RateBurst, cfg.Now), sleep: cfg.Sleep}
 
 	// Guardia dell'heartbeat: senza segnali oltre il tempo, chiude la connessione.
 	var heartbeatExpired atomic.Bool
@@ -186,11 +236,15 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		}
 	}()
 
-	frame, helloID, err := protocol.Encode(protocol.TypeHello, "", cfg.Hello(), cfg.Now())
+	hello := cfg.Hello()
+	if cfg.Events != nil {
+		hello.LastAckedSeq = cfg.Events.LastAcked()
+	}
+	frame, helloID, err := protocol.Encode(protocol.TypeHello, "", hello, cfg.Now())
 	if err != nil {
 		return false, err
 	}
-	if err := conn.Write(sctx, websocket.MessageText, frame); err != nil {
+	if err := w.write(sctx, frame); err != nil {
 		return false, readErr(err, &heartbeatExpired)
 	}
 
@@ -234,9 +288,26 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		}
 	}
 
+	st := newSyncState()
+	sendErr := make(chan error, 1)
+	if cfg.Events != nil {
+		go func() {
+			err := sendLoop(sctx, cfg, w, st)
+			if sctx.Err() == nil {
+				sendErr <- err
+				conn.CloseNow()
+			}
+		}()
+	}
+
 	for {
 		typ, data, err := conn.Read(sctx)
 		if err != nil {
+			select {
+			case serr := <-sendErr:
+				return true, fmt.Errorf("invio degli eventi: %w", serr)
+			default:
+			}
 			return true, readErr(err, &heartbeatExpired)
 		}
 		lastSignal.Store(cfg.Now().UnixNano())
@@ -244,43 +315,66 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 			// Nessun canale del terminale in questa fetta: i frame binari si scartano (§1.7).
 			continue
 		}
-		handleMessage(sctx, cfg, conn, data)
+		if err := handleMessage(sctx, cfg, w, st, data); err != nil {
+			conn.Close(websocket.StatusNormalClosure, "")
+			return true, err
+		}
 	}
 }
 
-func handleMessage(ctx context.Context, cfg *Config, conn *websocket.Conn, data []byte) {
+// handleMessage elabora un messaggio dopo welcome. Un errore chiude la sessione.
+func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, data []byte) error {
 	env, err := protocol.DecodeEnvelope(data)
 	if err != nil {
-		reply(ctx, cfg, conn, "", protocol.CodeMessageInvalid, err.Error())
-		return
+		reply(ctx, cfg, w, "", protocol.CodeMessageInvalid, err.Error())
+		return nil
 	}
 	switch env.Type {
 	case protocol.TypeConfigUpdate:
 		var u protocol.ConfigUpdate
 		if err := protocol.DecodeStrict(env.Body, &u); err != nil {
-			reply(ctx, cfg, conn, env.ID, protocol.CodeMessageInvalid, err.Error())
-			return
+			reply(ctx, cfg, w, env.ID, protocol.CodeMessageInvalid, err.Error())
+			return nil
 		}
 		if err := u.Config.Validate(); err != nil {
-			reply(ctx, cfg, conn, env.ID, protocol.CodeMessageInvalid, err.Error())
-			return
+			reply(ctx, cfg, w, env.ID, protocol.CodeMessageInvalid, err.Error())
+			return nil
 		}
 		if cfg.OnConfig != nil {
 			cfg.OnConfig(u.Config)
 		}
+	case protocol.TypeEventsAck:
+		a, err := protocol.DecodeEventsAck(env.Body)
+		if err != nil {
+			reply(ctx, cfg, w, env.ID, protocol.CodeMessageInvalid, err.Error())
+			return nil
+		}
+		if cfg.Events != nil {
+			if err := onAck(cfg, st, a.UpToSeq); err != nil {
+				return fmt.Errorf("giornale: %w", err)
+			}
+		}
 	case protocol.TypeError:
 		e, _ := protocol.DecodeError(env.Body)
 		cfg.Logger.Warn("errore dal backend", "codice", e.Code, "re", env.Re)
+		switch e.Code {
+		case protocol.CodeAckAhead:
+			st.ahead.Store(true)
+			st.poke()
+		case protocol.CodeSeqGap, protocol.CodeTruncationIncoherent:
+			return &sessionError{code: e.Code}
+		}
 	case protocol.TypeWelcome:
 		// Un welcome ripetuto non cambia nulla.
 	default:
 		// Tipi non ancora implementati in questa fetta: il connettore non li ha dichiarati nelle
 		// capability di hello, quindi il backend non dovrebbe mandarli.
-		reply(ctx, cfg, conn, env.ID, protocol.CodeTypeUnknown, "tipo non supportato da questa versione: "+env.Type)
+		reply(ctx, cfg, w, env.ID, protocol.CodeTypeUnknown, "tipo non supportato da questa versione: "+env.Type)
 	}
+	return nil
 }
 
-func reply(ctx context.Context, cfg *Config, conn *websocket.Conn, re, code, msg string) {
+func reply(ctx context.Context, cfg *Config, w *writer, re, code, msg string) {
 	if len(msg) > 2000 {
 		msg = msg[:2000]
 	}
@@ -288,7 +382,7 @@ func reply(ctx context.Context, cfg *Config, conn *websocket.Conn, re, code, msg
 	if err != nil {
 		return
 	}
-	_ = conn.Write(ctx, websocket.MessageText, frame)
+	_ = w.write(ctx, frame)
 }
 
 func readErr(err error, heartbeat *atomic.Bool) error {
@@ -300,6 +394,8 @@ func readErr(err error, heartbeat *atomic.Bool) error {
 		return ErrRevoked
 	case CloseDisabled:
 		return errDisabled
+	case CloseInternal:
+		return fmt.Errorf("errore interno del backend (1011), nuovo tentativo: %w", err)
 	case -1:
 		return err
 	default:
@@ -326,7 +422,27 @@ func classifyHandshake(resp *http.Response, err error) error {
 		return ErrTokenInvalid
 	case resp.StatusCode == http.StatusForbidden && body.Code == "HOST_DISABLED":
 		return errDisabled
+	case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode == http.StatusServiceUnavailable:
+		// 429 RATE_LIMITED e 503 UNAVAILABLE sono transitori (§1.16, §1.17): si ritenta, mai prima
+		// del Retry-After se il backend lo indica.
+		return &retryAfterError{
+			after: parseRetryAfter(resp.Header.Get("Retry-After")),
+			err:   fmt.Errorf("HTTP %d %s: %w", resp.StatusCode, body.Code, err),
+		}
 	default:
 		return fmt.Errorf("handshake rifiutato: HTTP %d %s: %w", resp.StatusCode, body.Code, err)
 	}
+}
+
+// parseRetryAfter legge Retry-After in secondi (il backend non usa la forma con la data). Valori
+// assenti o illeggibili valgono zero: resta il backoff.
+func parseRetryAfter(v string) time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return 0
+	}
+	if n > 3600 {
+		n = 3600
+	}
+	return time.Duration(n) * time.Second
 }

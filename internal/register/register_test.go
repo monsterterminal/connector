@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,5 +133,108 @@ func TestLoadTokenRifiutaPermessiLarghi(t *testing.T) {
 	}
 	if _, err := register.LoadToken(path); !errors.Is(err, register.ErrTokenFilePermissions) {
 		t.Fatalf("atteso ErrTokenFilePermissions, ottenuto %v", err)
+	}
+}
+
+// §1.3 (emendamento 2026-10-14): la sostituzione porta il token attuale nell'header; il backend
+// revoca il vecchio host solo se il token è di un host vivo della stessa macchina.
+func TestSostituzioneColTokenAttuale(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	s.AddInstallToken(installTok+"b", time.Hour)
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	first, err := c.Register(context.Background(), installTok, info())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Replace(context.Background(), installTok+"b", first.HostToken, info())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := s.ReplaceHeaders(); len(h) != 2 || h[0] != "" || h[1] != first.HostToken {
+		t.Fatalf("header della sostituzione ricevuti: %q", h)
+	}
+	if !s.HostRevoked(first.HostID) || s.HostRevoked(second.HostID) {
+		t.Fatal("la sostituzione doveva revocare il vecchio host e solo quello")
+	}
+}
+
+// Senza prova di possesso non si sostituisce nulla: l'host nuovo nasce accanto al vecchio.
+func TestRegistrazioneSenzaTokenAttualeNonSostituisce(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	s.AddInstallToken(installTok+"b", time.Hour)
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	first, _ := c.Register(context.Background(), installTok, info())
+	if _, err := c.Register(context.Background(), installTok+"b", info()); err != nil {
+		t.Fatal(err)
+	}
+	if s.HostRevoked(first.HostID) {
+		t.Fatal("senza header il vecchio host non va revocato")
+	}
+}
+
+func TestTokenAttualeMalformatoNonParte(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	if _, err := c.Replace(context.Background(), installTok, "non-un-token", info()); err == nil {
+		t.Fatal("token attuale malformato accettato")
+	}
+	if len(s.Registrations()) != 0 || !s.InstallTokenUsable(installTok) {
+		t.Fatal("la richiesta non doveva partire")
+	}
+}
+
+// Corpo non valido: 400 BODY_INVALID e il token NON si consuma (ADR 0409 D3), si può riusare.
+func TestCorpoNonValidoNonConsumaIlToken(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	bad := info()
+	bad.MachineID = ""
+	_, err := c.Register(context.Background(), installTok, bad)
+	var api *register.APIError
+	if !errors.As(err, &api) || api.Status != 400 || api.Code != "BODY_INVALID" {
+		t.Fatalf("atteso 400 BODY_INVALID, trovato %v", err)
+	}
+	if _, err := c.Register(context.Background(), installTok, info()); err != nil {
+		t.Fatalf("il token doveva essere ancora valido: %v", err)
+	}
+}
+
+// Kill-switch della macchina: 403 HOST_DISABLED anche alla registrazione, token non consumato,
+// e il messaggio dice cosa fare.
+func TestMacchinaFermataRifiutataAllaRegistrazione(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	s.DisableMachine(info().MachineID)
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	_, err := c.Register(context.Background(), installTok, info())
+	var api *register.APIError
+	if !errors.As(err, &api) || api.Status != 403 || api.Code != "HOST_DISABLED" {
+		t.Fatalf("atteso 403 HOST_DISABLED, trovato %v", err)
+	}
+	if !s.InstallTokenUsable(installTok) {
+		t.Fatal("il token non doveva essere consumato")
+	}
+	if api.Hint() == "" || !strings.Contains(err.Error(), "kill-switch") {
+		t.Fatalf("messaggio senza spiegazione: %v", err)
+	}
+}
+
+func TestOgniCodiceNotoHaUnaSpiegazione(t *testing.T) {
+	for _, code := range []string{"INSTALL_TOKEN_INVALID", "BODY_INVALID", "SERVER_LIMIT", "HOST_DISABLED", "CONNECTOR_TOO_OLD", "RATE_LIMITED", "UNAVAILABLE"} {
+		if (&register.APIError{Code: code}).Hint() == "" {
+			t.Errorf("%s senza spiegazione", code)
+		}
+	}
+	if (&register.APIError{Code: "SCONOSCIUTO"}).Hint() != "" {
+		t.Error("un codice sconosciuto non deve inventare spiegazioni")
 	}
 }

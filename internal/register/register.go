@@ -54,8 +54,38 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("registrazione rifiutata: HTTP %d %s", e.Status, e.Code)
+	msg := fmt.Sprintf("registrazione rifiutata: HTTP %d %s", e.Status, e.Code)
+	if h := e.Hint(); h != "" {
+		msg += ": " + h
+	}
+	return msg
 }
+
+// Hint spiega all'amministratore cosa fare per ciascun codice (http/error.json, §1.3, §1.17).
+func (e *APIError) Hint() string {
+	switch e.Code {
+	case "INSTALL_TOKEN_INVALID":
+		return "token di installazione sconosciuto, scaduto o già usato; generarne uno nuovo dal pannello"
+	case "BODY_INVALID":
+		return "dati dell'host non accettati; il token di installazione NON è stato consumato e si può riusare dopo la correzione"
+	case "HOST_DISABLED":
+		return "questa macchina è fermata dal kill-switch del tenant; va riattivata dal pannello (il token di installazione NON è stato consumato)"
+	case "SERVER_LIMIT":
+		return "il tenant ha raggiunto gli host inclusi nel piano; attivare l'extra o revocare un host dal pannello"
+	case "CONNECTOR_TOO_OLD":
+		return "versione del connettore non più accettata; aggiornarlo e riprovare"
+	case "RATE_LIMITED":
+		return "troppi tentativi da questo indirizzo; riprovare fra qualche minuto"
+	case "UNAVAILABLE":
+		return "servizio momentaneamente non disponibile; riprovare"
+	}
+	return ""
+}
+
+// HeaderCurrentHostToken porta il token ATTUALE dell'host quando lo si sostituisce (§1.3,
+// emendamento 2026-10-14): senza, o con un token che non è di questa macchina e di questo tenant,
+// il backend crea un host nuovo accanto al vecchio.
+const HeaderCurrentHostToken = "X-MonsterTerminal-Host-Token"
 
 // ErrInstallTokenFormat segnala un token di installazione malformato, rifiutato prima della rete.
 var ErrInstallTokenFormat = errors.New("token di installazione malformato: deve iniziare con mti_")
@@ -69,9 +99,19 @@ type Client struct {
 
 // Register esegue lo scambio. Il token di installazione non compare mai negli errori restituiti.
 func (c Client) Register(ctx context.Context, installToken string, info Info) (Response, error) {
+	return c.Replace(ctx, installToken, "", info)
+}
+
+// Replace registra l'host sostituendo quello che possiede currentHostToken (stessa macchina, stesso
+// tenant): il backend revoca il vecchio host e chiude la sua connessione. currentHostToken vuoto
+// equivale a Register. Nessuno dei due token compare negli errori restituiti.
+func (c Client) Replace(ctx context.Context, installToken, currentHostToken string, info Info) (Response, error) {
 	var out Response
 	if !installTokenRE.MatchString(installToken) {
 		return out, ErrInstallTokenFormat
+	}
+	if currentHostToken != "" && !hostTokenRE.MatchString(currentHostToken) {
+		return out, errors.New("token attuale dell'host malformato")
 	}
 	if !strings.HasPrefix(c.BaseURL, "https://") {
 		return out, errors.New("il servizio deve essere https")
@@ -85,6 +125,9 @@ func (c Client) Register(ctx context.Context, installToken string, info Info) (R
 		return out, err
 	}
 	req.Header.Set("Authorization", "Bearer "+installToken)
+	if currentHostToken != "" {
+		req.Header.Set(HeaderCurrentHostToken, currentHostToken)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	hc := c.HTTPClient
 	if hc == nil {

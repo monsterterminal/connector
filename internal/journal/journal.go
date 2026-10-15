@@ -186,6 +186,9 @@ func (j *Journal) Append(kind string, data any) (protocol.Event, error) {
 	if err != nil {
 		return protocol.Event{}, err
 	}
+	if string(raw) == "null" {
+		raw = []byte("{}") // data è sempre un oggetto (schema event.json)
+	}
 	if len(raw) > protocol.MaxEventDataBytes {
 		return protocol.Event{}, ErrDataTooLarge
 	}
