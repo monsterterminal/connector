@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -577,4 +578,39 @@ func TestRevocaUnSoloMessaggio(t *testing.T) {
 	if n := strings.Count(h.stderr.String(), "level=ERROR"); n != 1 {
 		t.Fatalf("%d messaggi di errore alla revoca, atteso 1:\n%s", n, h.stderr.String())
 	}
+}
+
+// Il comando run collega il terminale: un canale aperto dal backend arriva a tmux e l'output torna
+// indietro (spec §1.7). Server tmux privato.
+func TestRunCollegaIlTerminale(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux non installato")
+	}
+	dir, err := os.MkdirTemp("", "mt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "s")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run(); _ = os.RemoveAll(dir) })
+
+	h := newHarness(t)
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	h.register(t)
+	id := hostIDFromStdout(t, h.stdout.String())
+	a := h.app()
+	a.tmuxSocket = sock
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- a.run(ctx, h.args("run")) }()
+	defer func() { cancel(); waitExit(t, done) }()
+	waitHello(t, h.s)
+
+	mid, err := h.s.SendControl(id, protocol.TypeSessionOpen, protocol.SessionOpen{Channel: 1, Session: "prova", Create: true, Mode: protocol.ModeInteract, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "session.opened", func() bool { env, ok := h.s.Reply(id, mid); return ok && env.Type == protocol.TypeSessionOpened })
+	_ = h.s.SendInput(id, 1, []byte("echo cablato-$((20+3))\r"))
+	eventually(t, "output dal tmux dell'host", func() bool { return strings.Contains(string(h.s.Output(id, 1)), "cablato-23") })
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/ciarasino/monsterterminal-connector/internal/journal"
 	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
 	"github.com/ciarasino/monsterterminal-connector/internal/register"
+	"github.com/ciarasino/monsterterminal-connector/internal/terminal"
 	"github.com/ciarasino/monsterterminal-connector/internal/transport"
 )
 
@@ -49,6 +50,8 @@ type app struct {
 	now        func() time.Time
 	// configure ritocca la configurazione del trasporto (solo test: attese più corte).
 	configure func(*transport.Config)
+	// tmuxSocket, se non vuoto, è il socket del server tmux (solo test: un server privato).
+	tmuxSocket string
 }
 
 func defaultApp() app {
@@ -207,6 +210,7 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 		HTTPClient: a.client(0), // il WebSocket resta aperto: niente timeout complessivo
 		Logger:     log,
 		Events:     j,
+		Terminal:   terminal.New(terminal.Config{Socket: a.tmuxSocket, Logger: log}),
 		Now:        a.now,
 		Hello: func() protocol.Hello {
 			return protocol.Hello{
