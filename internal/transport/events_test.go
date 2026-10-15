@@ -277,18 +277,31 @@ func TestChiusura1011NonFermaIlConnettore(t *testing.T) {
 	}
 }
 
-// Il troncamento ricalcolato all'invio passa anche quando il giornale scarta eventi già in volo.
+// Il troncamento ricalcolato all'invio passa anche quando il giornale scarta eventi già in volo:
+// il backend è lento (AckDelay), tre eventi sono inviati e non confermati, e intanto il giornale
+// pieno scarta anche quelli. Senza journal.Rebase il primo troncamento dopo gli inviati dichiara
+// eventi che il backend ha già, e ogni ricollegamento finirebbe in TRUNCATION_INCOHERENT.
 func TestTroncamentoDuranteLaSessione(t *testing.T) {
 	s := fakeserver.New()
 	defer s.Close()
+	s.AckDelay = 100 * time.Millisecond
 	id, tok := s.AddHost()
 	j, err := journal.Open(t.TempDir(), journal.Options{MaxEvents: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	start(t, s, tok, withEvents(j))
+	start(t, s, tok, func(c *transport.Config) {
+		withEvents(j)(c)
+		c.MaxInFlight = 3
+	})
 	waitHello(t, s)
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 3; i++ {
+		if _, err := j.Append("test.event", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eventually(t, "primo evento accettato", func() bool { return s.Bookmark(id) >= 1 })
+	for i := 0; i < 57; i++ {
 		if _, err := j.Append("test.event", nil); err != nil {
 			t.Fatal(err)
 		}
@@ -307,5 +320,8 @@ func TestTroncamentoDuranteLaSessione(t *testing.T) {
 	}
 	if total != 60 {
 		t.Fatalf("seq coperti %d, attesi 60", total)
+	}
+	if s.Connects() != 1 {
+		t.Fatalf("collegamenti %d: un troncamento è stato rifiutato", s.Connects())
 	}
 }

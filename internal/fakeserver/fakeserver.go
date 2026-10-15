@@ -65,6 +65,9 @@ type Server struct {
 	HelloTimeout time.Duration
 	// ExtraRegisterField aggiunge un campo sconosciuto alla risposta di registrazione.
 	ExtraRegisterField bool
+	// AckDelay rallenta l'elaborazione di ogni evento accettato prima dell'ack, come un DB lento:
+	// gli eventi successivi restano in volo.
+	AckDelay time.Duration
 
 	mu              sync.Mutex
 	installTokens   map[string]time.Time // token -> scadenza
@@ -536,6 +539,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if closeNow {
 			_ = conn.Close(closeCode, "")
 			return
+		}
+		if s.AckDelay > 0 {
+			time.Sleep(s.AckDelay)
 		}
 		if upTo >= 1 {
 			_ = send(protocol.TypeEventsAck, env.ID, protocol.EventsAck{UpToSeq: upTo})
