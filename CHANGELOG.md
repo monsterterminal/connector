@@ -9,6 +9,9 @@
 - Primo evento: `connector.restarted` a ogni avvio dopo il primo (update, rollback, host-reboot,
   service-restart, crash).
 - `cmd/` testabile; codice di uscita `3` per host revocato.
+- Terminale: canali sulle sessioni tmux (`session.open/resize/close`, `sessions.list`, frame binari,
+  sola lettura, contropressione, `connector-shutdown`). Nuova dipendenza `github.com/creack/pty`.
+- Versione di sviluppo `0.1.1-dev`; il giornale si azzera quando si registra un host nuovo.
 
 ## Schemi 0.1.0 — 2026-10-12
 

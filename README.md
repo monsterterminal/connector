@@ -6,8 +6,9 @@ anche quando il collegamento cade.
 
 > Stato: **seconda fetta**, allineata al gateway vero (ADR 0409, verbale 2026-10-13). Registrazione e
 > sostituzione dell'host, collegamento in uscita con heartbeat, ricollegamento, revoca e kill-switch,
-> giornale degli eventi con conferme del backend. Unico evento prodotto oggi: `connector.restarted`.
-> Non ci sono ancora terminale, eventi degli agenti, catalogo né aggiornamenti.
+> giornale degli eventi con conferme del backend, canali del terminale sulle sessioni tmux. Unico
+> evento prodotto oggi: `connector.restarted`. Non ci sono ancora eventi degli agenti, catalogo né
+> aggiornamenti.
 
 ## Uso
 
@@ -41,6 +42,14 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   riparte da `hello` e riallinea.
 - **Invio dosato** (§1.17): al più 40 messaggi al secondo con raffica di 5 (45 nel secondo peggiore,
   il backend chiude a 50) e 32 eventi in volo (la coda del backend è 64).
+- **Terminale** (§1.6-1.7): ogni canale è un `tmux attach` in uno pseudo-terminale, sulla sessione
+  indicata dal backend (bersaglio esatto, regola dei nomi tmux), creata se richiesto. In sola lettura
+  l'attach è `-r` e l'input del canale si scarta sull'host. Chiudere un canale, o perdere la
+  connessione, stacca il client tmux: la sessione resta viva con gli agenti dentro. Output in frame
+  da al massimo 64 KiB, accorpato per 5 ms e dosato col resto dei messaggi; oltre 4 MiB in coda i
+  canali smettono di leggere da tmux finché la coda non scende sotto 1 MiB. Allo spegnimento il
+  backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host. Limiti della
+  prima fetta: niente specchio largo, riallineamento dello schermo, schermate e trascrizioni.
 - **Rifiuti transitori**: `429 RATE_LIMITED` e `503 UNAVAILABLE` all'upgrade non si ritentano prima del
   `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale.
 
@@ -52,7 +61,9 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Requisiti
 
-- Go 1.27 o superiore per la compilazione.
+- Go 1.27 o superiore per la compilazione. Dipendenze: `github.com/coder/websocket`,
+  `github.com/creack/pty`.
+- Sull'host: `tmux` per il terminale.
 - Destinazione: Linux delle famiglie Debian/Ubuntu e Red Hat, x86-64 e ARM64. Eseguibile unico, senza
   dipendenze sull'host.
 
@@ -64,7 +75,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/protocol/` | busta, messaggi e frame binari, validati contro `schemas/` |
 | `internal/transport/` | WebSocket in uscita, heartbeat, ricollegamento |
 | `internal/register/` | registrazione con il token di installazione |
-| `internal/tmux/` | canali del terminale sulle sessioni tmux |
+| `internal/terminal/` | canali del terminale sulle sessioni tmux |
 | `internal/journal/` | giornale degli eventi sul disco dell'host |
 | `internal/agents/` | adattatori degli agenti AI e timer di inattività |
 | `internal/catalog/` | esecuzione delle ricette firmate |
@@ -74,7 +85,8 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `packaging/` | servizio systemd e script di installazione |
 
 Le cartelle si creano quando arriva il codice che ci va dentro. Oggi esistono `cmd/monsterterminal-connector`,
-`internal/protocol`, `internal/register`, `internal/transport`, `internal/journal`, `internal/hostinfo` e
+`internal/protocol`, `internal/register`, `internal/transport`, `internal/journal`, `internal/terminal`,
+`internal/hostinfo` e
 `internal/fakeserver`, un backend finto che parla il protocollo 0.1.0 come il gateway vero e serve solo
 ai test.
 
@@ -87,8 +99,9 @@ go test -race ./...
 I test degli schemi controllano che ogni schema sia JSON valido, chiuso, con un `$id` coerente col
 percorso e riferimenti risolti. I test del codice girano contro il backend finto su TLS: registrazione e
 sostituzione, collegamento, caduta e ricollegamento, revoca, kill-switch, heartbeat, certificato non
-fidato, consegna e riallineamento degli eventi, troncamenti, limiti di invio, 429/503/1011, e il
-cablaggio del comando in `cmd/`.
+fidato, consegna e riallineamento degli eventi, troncamenti, limiti di invio, 429/503/1011, il
+terminale su un server tmux privato (non tocca le sessioni dell'utente; i test si saltano senza
+`tmux`), e il cablaggio del comando in `cmd/`.
 
 ## Licenza
 
