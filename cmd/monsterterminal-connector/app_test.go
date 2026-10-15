@@ -424,3 +424,66 @@ func TestBootTimeDiLinux(t *testing.T) {
 		t.Fatalf("btime implausibile: %v", bt)
 	}
 }
+
+// Riproduce la prova dal vivo del 15/10: dopo la revoca si rimuove il file del token e si registra
+// un host nuovo. Il giornale deve ripartire da zero: senza l'azzeramento il primo hello dichiara
+// confermato l'evento 1 del vecchio host, il backend risponde ACK_AHEAD e il nuovo host riceve un
+// journal.truncated per un evento che non ha mai avuto. Lo stesso vale per register -replace.
+func TestRegistrazioneDiUnHostNuovoAzzeraIlGiornale(t *testing.T) {
+	for _, viaReplace := range []bool{false, true} {
+		name := "dopo la revoca"
+		if viaReplace {
+			name = "con -replace"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.s.AddInstallToken(installTok, time.Hour)
+			h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+			h.register(t)
+			oldID := hostIDFromStdout(t, h.stdout.String())
+			// Due avvii: il secondo produce connector.restarted, confermato dal backend (seq 1).
+			for i := 0; i < 2; i++ {
+				done, stop := h.start(t)
+				waitHello(t, h.s)
+				if i == 1 {
+					eventually(t, "evento 1 confermato", func() bool { return h.s.Bookmark(oldID) == 1 })
+					time.Sleep(100 * time.Millisecond) // l'ack arriva al giornale
+				}
+				stop()
+				waitExit(t, done)
+			}
+
+			h.s.AddInstallToken(installTok+"b", time.Hour)
+			h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok + "b"
+			h.stdout.mu.Lock()
+			h.stdout.b.Reset()
+			h.stdout.mu.Unlock()
+			if viaReplace {
+				if code := h.register(t, "-replace"); code != exitOK {
+					t.Fatalf("register -replace: %d %s", code, h.stderr.String())
+				}
+			} else {
+				h.s.Revoke(oldID)
+				if err := os.Remove(h.tokenFile); err != nil {
+					t.Fatal(err)
+				}
+				if code := h.register(t); code != exitOK {
+					t.Fatalf("register: %d %s", code, h.stderr.String())
+				}
+			}
+			newID := hostIDFromStdout(t, h.stdout.String())
+
+			done, stop := h.start(t)
+			if hl := waitHello(t, h.s); hl.LastAckedSeq != 0 {
+				t.Fatalf("primo hello del nuovo host: lastAckedSeq %d, atteso 0", hl.LastAckedSeq)
+			}
+			eventually(t, "connector.restarted del nuovo host", func() bool { return len(h.s.Events(newID)) == 1 })
+			ev := h.s.Events(newID)[0]
+			if ev.Seq != 1 || ev.Kind != protocol.KindConnectorRestarted {
+				t.Fatalf("primo evento del nuovo host: seq %d %s, atteso 1 connector.restarted", ev.Seq, ev.Kind)
+			}
+			stop()
+			waitExit(t, done)
+		})
+	}
+}

@@ -379,6 +379,24 @@ func (j *Journal) Resync(bookmark int64) error {
 	return nil
 }
 
+// Reset svuota il giornale per un host NUOVO (registrazione o sostituzione, §1.3): il backend ha
+// per lui il segnalibro 0, e seq e segnalibro del vecchio host produrrebbero al primo hello un
+// ACK_AHEAD e un journal.truncated per eventi che il nuovo host non ha mai avuto. Gli eventi non
+// ancora consegnati appartengono al vecchio host e si perdono; restituisce quanti erano. La versione
+// dell'ultimo avvio resta (serve a connector.restarted).
+func (j *Journal) Reset() (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	lost := len(j.pending)
+	j.st = state{LastVersion: j.st.LastVersion}
+	j.pending = nil
+	j.nextSeq = 1
+	if err := j.rewrite(); err != nil {
+		return lost, err
+	}
+	return lost, nil
+}
+
 // LastVersion e SetLastVersion conservano la versione dell'ultimo avvio (per connector.restarted).
 func (j *Journal) LastVersion() string {
 	j.mu.Lock()

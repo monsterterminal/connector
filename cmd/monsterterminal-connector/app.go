@@ -82,7 +82,7 @@ func (a app) run(ctx context.Context, args []string) int {
 	var err error
 	switch cmd {
 	case "register":
-		err = a.cmdRegister(ctx, *server, *tokenFile, *replace)
+		err = a.cmdRegister(ctx, *server, *tokenFile, *stateDir, *replace)
 	case "run":
 		err = a.cmdRun(ctx, log, *server, *tokenFile, *stateDir)
 	case "version":
@@ -125,7 +125,7 @@ func (a app) readInstallToken() (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-func (a app) cmdRegister(ctx context.Context, server, tokenFile string, replace bool) error {
+func (a app) cmdRegister(ctx context.Context, server, tokenFile, stateDir string, replace bool) error {
 	current := ""
 	switch exists := register.TokenExists(tokenFile); {
 	case exists && !replace:
@@ -159,6 +159,20 @@ func (a app) cmdRegister(ctx context.Context, server, tokenFile string, replace 
 	}
 	if err := register.SaveToken(tokenFile, resp.HostToken); err != nil {
 		return err
+	}
+	// Host nuovo, giornale nuovo: il segnalibro del backend per lui è 0. Prima il token, poi il
+	// giornale: con l'ordine inverso un errore sul token lascerebbe il VECCHIO host con un giornale
+	// ripartito da 1, i cui eventi il backend scarterebbe come già ricevuti.
+	j, err := journal.Open(filepath.Join(stateDir, "journal"), journal.Options{Now: a.now})
+	if err != nil {
+		return fmt.Errorf("host registrato, ma il giornale degli eventi non si apre (%w): svuotare %s prima di run", err, stateDir)
+	}
+	lost, err := j.Reset()
+	if err != nil {
+		return fmt.Errorf("host registrato, ma il giornale degli eventi non si azzera (%w): svuotare %s prima di run", err, stateDir)
+	}
+	if lost > 0 {
+		fmt.Fprintf(a.stderr, "Giornale azzerato per il nuovo host: %d eventi del precedente non consegnati.\n", lost)
 	}
 	if current != "" {
 		fmt.Fprintf(a.stdout, "Host sostituito per %s (nuovo id %s); il precedente è revocato.\n", resp.TenantLabel, resp.HostID)

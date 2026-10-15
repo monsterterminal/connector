@@ -373,3 +373,37 @@ func TestBucoNelFileDichiarato(t *testing.T) {
 		t.Fatalf("backend a %d, atteso 5", b.last)
 	}
 }
+
+// §1.3: un host nuovo riparte da seq 1 e segnalibro 0, anche dopo la riapertura; resta la versione.
+func TestResetPerUnHostNuovo(t *testing.T) {
+	dir := t.TempDir()
+	j := open(t, dir, Options{})
+	j.SetLastVersion("0.1.0")
+	appendN(t, j, 5)
+	if err := j.Ack(3); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := j.Reset()
+	if err != nil || lost != 2 {
+		t.Fatalf("Reset: persi %d, %v (attesi 2)", lost, err)
+	}
+	check := func(j *Journal, when string) {
+		t.Helper()
+		if j.LastAcked() != 0 || j.Len() != 0 || j.LastVersion() != "0.1.0" {
+			t.Fatalf("%s: segnalibro %d, pendenti %d, versione %q", when, j.LastAcked(), j.Len(), j.LastVersion())
+		}
+	}
+	check(j, "dopo Reset")
+	j2 := open(t, dir, Options{})
+	check(j2, "dopo la riapertura")
+	ev, err := j2.Append("test.event", nil)
+	if err != nil || ev.Seq != 1 {
+		t.Fatalf("primo seq dopo Reset %d, %v", ev.Seq, err)
+	}
+	// Il backend del nuovo host (segnalibro 0) accetta senza troncamenti.
+	b := &backend{}
+	drain(t, j2, b)
+	if len(b.saved) != 1 || b.saved[0].Kind == protocol.KindJournalTruncated {
+		t.Fatalf("il nuovo host ha ricevuto %+v", b.saved)
+	}
+}
