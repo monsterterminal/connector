@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,13 +48,19 @@ type harness struct {
 	stdout    *syncBuf
 	stderr    *syncBuf
 	boot      time.Time
+	panes     map[string]string // pannello tmux → sessione, per il comando hook
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	s := fakeserver.New()
 	t.Cleanup(s.Close)
-	dir := t.TempDir()
+	// Cartella corta: il socket degli hook (state/hook.sock) deve stare nei ~100 caratteri di un socket Unix.
+	dir, err := os.MkdirTemp("", "mtc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	return &harness{
 		s: s, dir: dir, tokenFile: filepath.Join(dir, "etc", "host-token"),
 		stateDir: filepath.Join(dir, "state"), env: map[string]string{},
@@ -77,6 +84,16 @@ func (h *harness) app() app {
 		configure: func(c *transport.Config) {
 			c.SyncGrace = 50 * time.Millisecond
 			c.Backoff = &transport.Backoff{Min: 20 * time.Millisecond, Max: 100 * time.Millisecond}
+		},
+		// Mai il server tmux vero della macchina: il timer di inattività ne leggerebbe le sessioni.
+		tmuxSocket: filepath.Join(h.dir, "nessun-tmux"),
+		home:       func() (string, error) { return filepath.Join(h.dir, "home"), nil },
+		executable: func() (string, error) { return "/usr/local/bin/monsterterminal-connector", nil },
+		paneSession: func(pane string) (string, error) {
+			if s, ok := h.panes[pane]; ok {
+				return s, nil
+			}
+			return "", errors.New("pannello sconosciuto")
 		},
 	}
 }

@@ -358,3 +358,46 @@ func netDial(sock string) (interface {
 }, error) {
 	return dialUnix(sock)
 }
+
+// Gli hook si applicano nell'ordine in cui arrivano al socket: due eventi ravvicinati non si invertono.
+func TestOrdineDegliHook(t *testing.T) {
+	dir := shortDir(t)
+	sock := filepath.Join(dir, "hook.sock")
+	j := &fakeJournal{}
+	tr := NewTracker(j, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = Listen(ctx, sock, tr) }()
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for i := 0; i < 50; i++ {
+		ev := "UserPromptSubmit"
+		if i%2 == 1 {
+			ev = "Stop"
+		}
+		if err := Send(sock, HookMessage{Event: ev, Session: "s"}, time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(j.all()) < 50 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := j.all()
+	if len(got) != 50 {
+		t.Fatalf("%d stati, attesi 50", len(got))
+	}
+	for i, e := range got {
+		want := protocol.StateWorking
+		if i%2 == 1 {
+			want = protocol.StateFinished
+		}
+		if e.State != want {
+			t.Fatalf("stato %d = %s, atteso %s: ordine non rispettato", i, e.State, want)
+		}
+	}
+}

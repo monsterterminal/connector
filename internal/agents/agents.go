@@ -163,23 +163,28 @@ func Listen(ctx context.Context, path string, t *Tracker) error {
 			}
 			return err
 		}
-		go func() {
-			defer c.Close()
-			_ = c.SetDeadline(time.Now().Add(2 * time.Second))
-			sc := bufio.NewScanner(io.LimitReader(c, MaxHookLine+1))
-			sc.Buffer(make([]byte, MaxHookLine+1), MaxHookLine+1)
-			if !sc.Scan() {
-				return
-			}
-			var m HookMessage
-			if err := protocol.DecodeStrict(sc.Bytes(), &m); err != nil {
-				t.log.Warn("riga di hook non valida, scartata")
-				return
-			}
-			if err := t.HandleHook(m); err != nil {
-				t.log.Warn("stato dell'agente non registrato", "errore", err.Error())
-			}
-		}()
+		// Una connessione alla volta, nell'ordine di arrivo: due hook ravvicinati (Notification e poi
+		// Stop) serviti in parallelo potrebbero applicarsi al contrario e lasciare lo stato sbagliato.
+		// Le righe sono piccole e il tetto di 2 s impedisce a un client lento di fermare gli altri a lungo.
+		t.serve(c)
+	}
+}
+
+func (t *Tracker) serve(c net.Conn) {
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+	sc := bufio.NewScanner(io.LimitReader(c, MaxHookLine+1))
+	sc.Buffer(make([]byte, MaxHookLine+1), MaxHookLine+1)
+	if !sc.Scan() {
+		return
+	}
+	var m HookMessage
+	if err := protocol.DecodeStrict(sc.Bytes(), &m); err != nil {
+		t.log.Warn("riga di hook non valida, scartata")
+		return
+	}
+	if err := t.HandleHook(m); err != nil {
+		t.log.Warn("stato dell'agente non registrato", "errore", err.Error())
 	}
 }
 

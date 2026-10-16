@@ -52,12 +52,18 @@ type app struct {
 	configure func(*transport.Config)
 	// tmuxSocket, se non vuoto, è il socket del server tmux (solo test: un server privato).
 	tmuxSocket string
+	// home e executable: cartella dell'utente e percorso del binario (per gli hook di Claude Code).
+	home       func() (string, error)
+	executable func() (string, error)
+	// paneSession ricava la sessione tmux di un pannello (comando hook).
+	paneSession func(pane string) (string, error)
 }
 
 func defaultApp() app {
 	return app{
 		getenv: os.Getenv, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr,
 		collect: hostinfo.Collect, bootTime: linuxBootTime, now: time.Now,
+		home: os.UserHomeDir, executable: os.Executable, paneSession: tmuxPaneSession,
 	}
 }
 
@@ -74,11 +80,23 @@ func (a app) run(ctx context.Context, args []string) int {
 	tokenFile := fs.String("token-file", defaultTokenFile, "file del token dell'host")
 	stateDir := fs.String("state-dir", defaultStateDir, "cartella del giornale degli eventi")
 	replace := fs.Bool("replace", false, "register: sostituisce l'host registrato su questa macchina (serve il suo token attuale)")
+	yes := fs.Bool("yes", false, "hooks install: risponde sì alla domanda di consenso senza terminale")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(a.stderr, "argomenti in più: %s\n", strings.Join(fs.Args(), " "))
+	positional := 0
+	if cmd == "hook" || cmd == "hooks" {
+		positional = 1 // l'evento di Claude Code, oppure install|remove
+	}
+	if cmd == "hook" {
+		// Chiamato da Claude Code: non deve mai bloccarlo né sporcare la sua uscita (spec §1.21).
+		if fs.NArg() == 1 {
+			a.cmdHook(fs.Arg(0), *stateDir)
+		}
+		return exitOK
+	}
+	if fs.NArg() != positional {
+		fmt.Fprintf(a.stderr, "argomenti non validi: %q\n", fs.Args())
 		return exitUsage
 	}
 
@@ -90,6 +108,8 @@ func (a app) run(ctx context.Context, args []string) int {
 		err = a.cmdRun(ctx, log, *server, *tokenFile, *stateDir)
 	case "version":
 		fmt.Fprintln(a.stdout, version)
+	case "hooks":
+		err = a.cmdHooks(fs.Arg(0), *stateDir, *yes)
 	default:
 		a.usage()
 		return exitUsage
@@ -107,7 +127,7 @@ func (a app) run(ctx context.Context, args []string) int {
 }
 
 func (a app) usage() {
-	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace]|run|version [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
+	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace]|run|version|hooks install [-yes]|hooks remove [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
 }
 
 func (a app) client(timeout time.Duration) *http.Client {
@@ -204,6 +224,8 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	if err := a.recordStart(log, j, stateDir); err != nil {
 		return err
 	}
+	// Stati degli agenti (spec §1.21): socket degli hook di Claude Code e timer di inattività.
+	thresholds := a.startAgents(ctx, log, j, stateDir)
 	cfg := transport.Config{
 		URL:        "wss://" + strings.TrimPrefix(server, "https://") + "/v1",
 		Token:      tok,
@@ -215,11 +237,14 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 		Hello: func() protocol.Hello {
 			return protocol.Hello{
 				ConnectorVersion: version, Protocol: protocol.Version, OS: "linux", Arch: hi.Arch,
-				RunAsUser: hi.User, RunAsRoot: hi.Root, Capabilities: []string{},
+				RunAsUser: hi.User, RunAsRoot: hi.Root, Capabilities: a.capabilities(),
 				Agents: []protocol.Agent{},
 			}
 		},
 	}
+	// Le soglie di inattività vengono dalla configurazione dell'host (§1.11).
+	cfg.OnWelcome = func(w protocol.Welcome) { thresholds.Set(w.Config) }
+	cfg.OnConfig = func(c protocol.HostConfig) { thresholds.Set(c) }
 	if a.configure != nil {
 		a.configure(&cfg)
 	}
