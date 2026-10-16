@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.2.0/events/session.started.json",
+  "title": "session.started",
+  "description": "Sessione tmux avviata (§1.8). Schema del campo data del messaggio event.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "session": {
+      "$ref": "../common.json#/$defs/sessionName"
+    },
+    "createdBy": {
+      "enum": [
+        "browser",
+        "host"
+      ]
+    }
+  },
+  "required": [
+    "session",
+    "createdBy"
+  ]
+}

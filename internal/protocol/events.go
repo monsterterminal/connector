@@ -82,3 +82,39 @@ var semverRE = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0
 
 // IsSemver dice se s è una versione semver (§1.20).
 func IsSemver(s string) bool { return semverRE.MatchString(s) }
+
+// Evento agent.state (§1.8, ADR 0410 D1; waitingFor e requestId dagli schemi 0.2.0, §2.9).
+const KindAgentState = "agent.state"
+
+// Stati dell'agente: insieme chiuso di ADR 0410 D1.
+const (
+	StateWorking   = "lavora"
+	StateWaiting   = "attende-input"
+	StateFinished  = "ha-finito"
+	StateError     = "errore"
+	StateIdle      = "inattivo"
+	SourceHook     = "hook"
+	SourceIdle     = "idle-timer"
+	WaitPermission = "permesso"
+	WaitQuestion   = "domanda"
+	WaitUnknown    = "sconosciuto"
+	AgentClaude    = "claude-code"
+	AgentGeneric   = "generic"
+)
+
+// AgentStates e WaitingFor sono gli enum dello schema, nello stesso ordine.
+var (
+	AgentStates   = []string{StateWorking, StateWaiting, StateFinished, StateError, StateIdle}
+	AgentSources  = []string{SourceHook, "output-pattern", SourceIdle}
+	WaitingForAll = []string{WaitPermission, WaitQuestion, WaitUnknown}
+)
+
+// AgentState è il data di agent.state. WaitingFor e RequestID solo con attende-input.
+type AgentState struct {
+	Session    string `json:"session"`
+	Agent      string `json:"agent"`
+	State      string `json:"state"`
+	Source     string `json:"source"`
+	WaitingFor string `json:"waitingFor,omitempty"`
+	RequestID  string `json:"requestId,omitempty"`
+}

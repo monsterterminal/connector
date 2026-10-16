@@ -1,7 +1,7 @@
 // Package protocol contiene la busta e i messaggi del protocollo tra connettore e backend.
 //
 // Riferimento: spec monsterterminal-saas.md, capitolo 1 (protocollo 1), e gli schemi JSON in
-// schemas/0.1.0. Ogni decodifica è rigida: un campo sconosciuto rende il messaggio non valido (§1.5).
+// schemas/0.2.0. Ogni decodifica è rigida: un campo sconosciuto rende il messaggio non valido (§1.5).
 package protocol
 
 import (
@@ -19,7 +19,7 @@ import (
 const Version = 1
 
 // SchemaVersion è la versione degli schemi JSON che questo codice implementa (§1.19).
-const SchemaVersion = "0.1.0"
+const SchemaVersion = "0.2.0"
 
 // MaxFrameBytes è la dimensione massima di un frame (§1.2).
 const MaxFrameBytes = 1 << 20
@@ -50,7 +50,7 @@ func invalid(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
 }
 
-// Envelope è la busta comune dei frame di testo (§1.5, schemas/0.1.0/envelope.json).
+// Envelope è la busta comune dei frame di testo (§1.5, schemas/0.2.0/envelope.json).
 type Envelope struct {
 	Type string          `json:"type"`
 	ID   string          `json:"id"`

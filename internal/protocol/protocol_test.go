@@ -85,6 +85,7 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/backend-to-connector/events.ack.json", EventsAck{}},
 		{"events/connector.restarted.json", ConnectorRestarted{}},
 		{"events/journal.truncated.json", JournalTruncated{}},
+		{"events/agent.state.json", AgentState{WaitingFor: "x", RequestID: "x"}},
 		{"messages/backend-to-connector/session.open.json", SessionOpen{}},
 		{"messages/backend-to-connector/session.resize.json", SessionResize{}},
 		{"messages/backend-to-connector/session.close.json", SessionClose{}},
@@ -141,7 +142,18 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if int64(defs["channel"].(map[string]any)["maximum"].(float64)) != 1<<32-1 {
 		t.Errorf("canale: schema %v, Go uint32", defs["channel"])
 	}
-	if Version != 1 || SchemaVersion != "0.1.0" {
+	// Stati, origini e motivi d'attesa di agent.state: gli enum dello schema (ADR 0410 D1, §2.9).
+	asp := readSchema(t, "events/agent.state.json")["properties"].(map[string]any)
+	if fmt.Sprint(asp["source"].(map[string]any)["enum"]) != fmt.Sprint(AgentSources) {
+		t.Errorf("origini: schema %v, Go %v", asp["source"], AgentSources)
+	}
+	if fmt.Sprint(asp["waitingFor"].(map[string]any)["enum"]) != fmt.Sprint(WaitingForAll) {
+		t.Errorf("waitingFor: schema %v, Go %v", asp["waitingFor"], WaitingForAll)
+	}
+	if fmt.Sprint(defs["agentState"].(map[string]any)["enum"]) != fmt.Sprint(AgentStates) {
+		t.Errorf("stati: schema %v, Go %v", defs["agentState"], AgentStates)
+	}
+	if Version != 1 || SchemaVersion != "0.2.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }

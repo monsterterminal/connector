@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.2.0/objects/host-config.json",
+  "title": "Configurazione dell'host decisa dal backend",
+  "description": "Portata da welcome e config.update (§1.11). Le impostazioni del cliente sull'host non compaiono qui.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "defaultIdleThresholdSeconds": {
+      "type": "integer",
+      "minimum": 60,
+      "maximum": 86400,
+      "default": 300
+    },
+    "sessionIdleThresholds": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "../common.json#/$defs/sessionName"
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 60,
+        "maximum": 86400
+      }
+    },
+    "recording": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "const": false
+            }
+          },
+          "required": [
+            "enabled"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "const": true
+            },
+            "retentionDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365
+            }
+          },
+          "required": [
+            "enabled",
+            "retentionDays"
+          ]
+        }
+      ]
+    },
+    "maxChannels": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "defaultIdleThresholdSeconds",
+    "sessionIdleThresholds",
+    "recording",
+    "maxChannels"
+  ]
+}

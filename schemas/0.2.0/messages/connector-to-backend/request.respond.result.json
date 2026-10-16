@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.2.0/messages/connector-to-backend/request.respond.result.json",
+  "title": "request.respond.result",
+  "description": "Esito della consegna di request.respond (§2.9 punto 3)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "request.respond.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "outcome": {
+          "enum": [
+            "consegnata",
+            "superata",
+            "non-supportata"
+          ]
+        }
+      },
+      "required": [
+        "requestId",
+        "outcome"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}
