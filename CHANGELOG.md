@@ -1,5 +1,16 @@
 # Changelog
 
+## Schemi 0.2.0 — 2026-10-16
+
+- Solo aggiunte rispetto a 0.1.0 (protocollo sempre 1): `waitingFor`/`requestId` in `agent.state`,
+  `request.context`, `request.respond`, `request.respond.result`, `RATE_LIMITED` e `UNAVAILABLE` in
+  `http/error.json`, tetto 2^53 − 1 sui contatori.
+
+## Connettore — 2026-10-16 (non rilasciato)
+
+- Stati degli agenti: adattatore di Claude Code con hook (`hook`, `hooks install`/`remove` col
+  consenso), livello generico col timer di inattività, capacità `hooks` in `hello`.
+
 ## Connettore — 2026-10-15 (non rilasciato)
 
 - Allineamento al gateway del backend (ADR 0409, verbale 2026-10-13): sostituzione con

@@ -6,9 +6,10 @@ anche quando il collegamento cade.
 
 > Stato: **seconda fetta**, allineata al gateway vero (ADR 0409, verbale 2026-10-13). Registrazione e
 > sostituzione dell'host, collegamento in uscita con heartbeat, ricollegamento, revoca e kill-switch,
-> giornale degli eventi con conferme del backend, canali del terminale sulle sessioni tmux. Unico
-> evento prodotto oggi: `connector.restarted`. Non ci sono ancora eventi degli agenti, catalogo né
-> aggiornamenti.
+> giornale degli eventi con conferme del backend, canali del terminale sulle sessioni tmux, stati degli
+> agenti AI (Claude Code con hook, livello generico con timer di inattività). Eventi prodotti:
+> `connector.restarted` e `agent.state`. Non ci sono ancora richieste con risposta dalla card, catalogo né
+> aggiornamenti. Schemi del protocollo 0.2.0.
 
 ## Uso
 
@@ -21,6 +22,10 @@ MONSTERTERMINAL_INSTALL_TOKEN=mti_… monsterterminal-connector register
 MONSTERTERMINAL_INSTALL_TOKEN=mti_… monsterterminal-connector register -replace
 # collegamento
 monsterterminal-connector run
+# notifiche di Claude Code: chiede «Ho trovato Claude Code: attivo le notifiche? [S/n]»
+# e aggiunge i propri hook nelle impostazioni dell'utente (~/.claude/settings.json); -yes senza terminale
+monsterterminal-connector hooks install
+monsterterminal-connector hooks remove
 ```
 
 Opzioni comuni: `-server` (default `https://connect.monsterterminal.com`), `-token-file` (default
@@ -50,6 +55,12 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   canali smettono di leggere da tmux finché la coda non scende sotto 1 MiB. Allo spegnimento il
   backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host. Limiti della
   prima fetta: niente specchio largo, riallineamento dello schermo, schermate e trascrizioni.
+- **Stati degli agenti** (§1.21, ADR 0410): gli hook di Claude Code eseguono `monsterterminal-connector
+  hook <evento>`, che ricava la sessione tmux da `TMUX_PANE` e la passa al connettore su un socket locale
+  (`hook.sock` nella cartella di stato, `0600`); il connettore scrive `agent.state` nel giornale solo
+  quando lo stato cambia. Solo metadati: mai prompt, output o comandi. Il comando `hook` non blocca mai
+  Claude Code e non scrive nulla. Le sessioni senza adattatore da 30 minuti passano sotto il timer di
+  inattività (soglia della configurazione dell'host, 5 minuti di default), letto dall'attività di tmux.
 - **Rifiuti transitori**: `429 RATE_LIMITED` e `503 UNAVAILABLE` all'upgrade non si ritentano prima del
   `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale.
 
@@ -77,7 +88,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/register/` | registrazione con il token di installazione |
 | `internal/terminal/` | canali del terminale sulle sessioni tmux |
 | `internal/journal/` | giornale degli eventi sul disco dell'host |
-| `internal/agents/` | adattatori degli agenti AI e timer di inattività |
+| `internal/agents/` | adattatore di Claude Code (hook), timer di inattività, installazione degli hook |
 | `internal/catalog/` | esecuzione delle ricette firmate |
 | `internal/update/` | aggiornamento firmato e ritorno alla versione precedente |
 | `internal/signing/` | verifica Ed25519 con le chiavi pubbliche incluse nel binario |
@@ -86,7 +97,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 Le cartelle si creano quando arriva il codice che ci va dentro. Oggi esistono `cmd/monsterterminal-connector`,
 `internal/protocol`, `internal/register`, `internal/transport`, `internal/journal`, `internal/terminal`,
-`internal/hostinfo` e
+`internal/agents`, `internal/hostinfo` e
 `internal/fakeserver`, un backend finto che parla il protocollo 0.1.0 come il gateway vero e serve solo
 ai test.
 
