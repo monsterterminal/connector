@@ -192,3 +192,20 @@ func TestHookNonBloccaMai(t *testing.T) {
 		t.Errorf("hook senza evento: %d", code)
 	}
 }
+
+// I flag si possono scrivere anche dopo l'azione, come nel README: `hooks install -yes`.
+func TestHooksFlagDopoLAzione(t *testing.T) {
+	h := newHarness(t)
+	settings := conClaude(t, h, true)
+	code := h.app().run(context.Background(), []string{"hooks", "install", "-yes", "-state-dir", h.stateDir})
+	if code != exitOK || !agents.Installed(settings) {
+		t.Fatalf("hooks install -yes -state-dir: uscita %d, stderr %s", code, h.stderr.String())
+	}
+	raw, _ := os.ReadFile(settings)
+	if !strings.Contains(string(raw), "hook -state-dir "+h.stateDir+" Stop") {
+		t.Fatalf("-state-dir dopo l'azione ignorato: %s", raw)
+	}
+	if code := h.app().run(context.Background(), []string{"hooks", "remove", "extra"}); code != exitUsage {
+		t.Fatalf("argomento in più: uscita %d", code)
+	}
+}

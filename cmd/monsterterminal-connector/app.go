@@ -87,6 +87,19 @@ func (a app) run(ctx context.Context, args []string) int {
 	positional := 0
 	if cmd == "hook" || cmd == "hooks" {
 		positional = 1 // l'evento di Claude Code, oppure install|remove
+		// Il parser dei flag si ferma al primo argomento posizionale: `hooks install -yes` perderebbe
+		// -yes. I flag dopo l'azione si rileggono.
+		if fs.NArg() > 1 {
+			action := fs.Arg(0)
+			if err := fs.Parse(fs.Args()[1:]); err != nil {
+				return exitUsage
+			}
+			if fs.NArg() > 0 {
+				fmt.Fprintf(a.stderr, "argomenti non validi: %q\n", fs.Args())
+				return exitUsage
+			}
+			_ = fs.Parse([]string{action})
+		}
 	}
 	if cmd == "hook" {
 		// Chiamato da Claude Code: non deve mai bloccarlo né sporcare la sua uscita (spec §1.21).
