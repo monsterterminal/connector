@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.3.0/messages/connector-to-backend/session.closed.json",
+  "title": "session.closed",
+  "description": "Il canale si chiude per cause dell'host (§1.7)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.closed"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "$ref": "../../common.json#/$defs/channel"
+        },
+        "reason": {
+          "enum": [
+            "session-ended",
+            "tmux-gone",
+            "connector-shutdown",
+            "error"
+          ]
+        }
+      },
+      "required": [
+        "channel",
+        "reason"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.3.0/messages/backend-to-connector/session.open.json",
+  "title": "session.open",
+  "description": "Apertura di un canale su una sessione tmux (§1.7)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.open"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "$ref": "../../common.json#/$defs/channel"
+        },
+        "session": {
+          "$ref": "../../common.json#/$defs/sessionName"
+        },
+        "create": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "view",
+            "interact"
+          ]
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "channel",
+        "session",
+        "create",
+        "mode",
+        "cols",
+        "rows"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

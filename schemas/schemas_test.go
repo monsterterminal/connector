@@ -13,9 +13,9 @@ import (
 	"testing"
 )
 
-// Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12) e 0.2.0 (aperta il 2026-10-16,
-// spec §1.15). Ogni test gira su ognuna.
-var versions = []string{"0.1.0", "0.2.0"}
+// Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12), 0.2.0 (aperta il 2026-10-16,
+// spec §1.15) e 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context). Ogni test gira su ognuna.
+var versions = []string{"0.1.0", "0.2.0", "0.3.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -30,6 +30,16 @@ var wantMessages = map[string]map[string][]string{
 			"session.config", "session.open", "session.resize", "sessions.list", "update.available", "welcome"},
 	},
 	"0.2.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
+			"request.context", "request.respond.result", "session.closed", "session.opened", "sessions.list.result",
+			"update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "request.respond",
+			"session.close", "session.config", "session.open", "session.resize", "sessions.list", "update.available",
+			"welcome"},
+	},
+	// 0.3.0 (2026-10-17, spec §2.12): stesso vocabolario della 0.2.0; request.context riceve il campo
+	// opzionale deadline.
+	"0.3.0": {
 		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
 			"request.context", "request.respond.result", "session.closed", "session.opened", "sessions.list.result",
 			"update.result"},
@@ -274,5 +284,48 @@ func TestZeroDueEstendeZeroUno(t *testing.T) {
 	}
 	if cur["common.json"]["$defs"].(map[string]any)["seq"].(map[string]any)["maximum"] != float64(9007199254740991) {
 		t.Error("seq senza il tetto 2^53-1")
+	}
+}
+
+// TestZeroTreEstendeZeroDue: la 0.3.0 non toglie nulla alla 0.2.0 e aggiunge il solo campo opzionale
+// deadline a request.context (spec §2.12, §1.15: tipi e campi opzionali nuovi non cambiano il protocollo).
+func TestZeroTreEstendeZeroDue(t *testing.T) {
+	old, cur := loadAll(t, "0.2.0"), loadAll(t, "0.3.0")
+	props := func(n any) map[string]any {
+		m, _ := n.(map[string]any)
+		p, _ := m["properties"].(map[string]any)
+		return p
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.3.0", rel)
+			continue
+		}
+		for k := range props(o) {
+			if _, ok := props(c)[k]; !ok {
+				t.Errorf("%s: proprietà %s sparita", rel, k)
+			}
+		}
+		if ob, ok := props(o)["body"]; ok {
+			for k := range props(ob) {
+				if _, ok := props(props(c)["body"])[k]; !ok {
+					t.Errorf("%s body: proprietà %s sparita", rel, k)
+				}
+			}
+		}
+	}
+	body := props(props(cur["messages/connector-to-backend/request.context.json"])["body"])
+	if _, ok := body["deadline"]; !ok {
+		t.Error("request.context 0.3.0 senza deadline")
+	}
+	rc := props(cur["messages/connector-to-backend/request.context.json"])["body"].(map[string]any)
+	for _, r := range rc["required"].([]any) {
+		if r == "deadline" {
+			t.Error("deadline deve restare opzionale: un connettore 0.2.0 non lo manda")
+		}
+	}
+	if _, ok := props(props(old["messages/connector-to-backend/request.context.json"])["body"])["deadline"]; ok {
+		t.Error("deadline non deve esistere in 0.2.0")
 	}
 }

@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.3.0/objects/recipe.json",
+  "title": "Ricetta del catalogo",
+  "description": "Contratto tra catalogo e connettore (§1.9, ADR 0410 D4). Firmata con la chiave delle ricette sulla forma canonica.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipeId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "recipeVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "agent": {
+      "$ref": "../common.json#/$defs/agentId"
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "os": {
+            "$ref": "../common.json#/$defs/os"
+          },
+          "arch": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "../common.json#/$defs/arch"
+            }
+          },
+          "distro": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "../common.json#/$defs/distro"
+            }
+          }
+        },
+        "required": [
+          "os",
+          "arch",
+          "distro"
+        ]
+      }
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "enum": [
+              "command"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._+-]{1,64}$"
+          },
+          "minVersion": {
+            "$ref": "../common.json#/$defs/semver"
+          }
+        },
+        "required": [
+          "check",
+          "name"
+        ]
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "description": "vettore di argomenti, eseguito senza shell"
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          }
+        },
+        "required": [
+          "run",
+          "timeoutSeconds"
+        ]
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instructions": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "instructions"
+      ]
+    },
+    "start": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "hooks",
+            "output-patterns",
+            "generic"
+          ]
+        },
+        "id": {
+          "$ref": "../common.json#/$defs/agentId"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    }
+  },
+  "required": [
+    "recipeId",
+    "recipeVersion",
+    "agent",
+    "platforms",
+    "requires",
+    "steps",
+    "auth",
+    "start",
+    "adapter"
+  ]
+}
