@@ -1,5 +1,26 @@
 # Changelog
 
+## Schemi 0.3.0 — 2026-10-17
+
+- Solo aggiunte rispetto a 0.2.0 (protocollo sempre 1): `deadline` opzionale in `request.context`
+  (spec §2.12, finestra adattiva).
+
+## Connettore — 2026-10-17 (non rilasciato)
+
+- Richieste dell'agente (spec §2.9, §2.12; §1.21 «Hook di permesso»): l'hook `PermissionRequest` di
+  Claude Code apre una richiesta, manda `request.context` fuori dal giornale (strumento e comando
+  esatto, al più 16 KiB) e aspetta la risposta dalla card per la finestra adattiva (2 minuti con un
+  client collegato e attivo sulla sessione tmux, 60 minuti altrimenti); `request.respond` diventa la
+  decisione dell'hook (`approva` → allow, `nega` → deny, `testo` → deny col testo come motivo) e il
+  connettore risponde `request.respond.result` (`consegnata`, `superata`). Il prompt nel terminale
+  resta visibile in parallelo: una risposta data lì chiude la richiesta come superata al cambio di
+  stato (`PostToolUse` → `lavora`, nuovo hook installato). Una sola richiesta aperta per sessione; il
+  contesto delle richieste aperte si rimanda dopo ogni `welcome`.
+- `hooks install` scrive anche `PermissionRequest` (timeout 3660 s) e `PostToolUse`.
+- `run` prende un lock sulla cartella di stato: un secondo connettore sulla stessa cartella si ferma
+  subito con un messaggio (TD-MT-CONNECTOR-SOCKET-LOCK).
+- Schemi 0.3.0 nel codice (`protocol.SchemaVersion`).
+
 ## Schemi 0.2.0 — 2026-10-16
 
 - Solo aggiunte rispetto a 0.1.0 (protocollo sempre 1): `waitingFor`/`requestId` in `agent.state`,

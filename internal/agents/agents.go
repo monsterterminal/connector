@@ -27,10 +27,30 @@ type HookMessage struct {
 	Session          string `json:"session"`
 	ClaudeSession    string `json:"claudeSession,omitempty"`
 	NotificationType string `json:"notificationType,omitempty"`
+	// Solo con PermissionRequest (spec §1.21 «Hook di permesso», §2.12): lo strumento e il suo input
+	// già ridotto al contesto della richiesta (comando esatto o input compatto), al più
+	// protocol.MaxRequestDetail byte, con l'avviso di troncamento.
+	Action          string `json:"action,omitempty"`
+	Detail          string `json:"detail,omitempty"`
+	DetailTruncated bool   `json:"detailTruncated,omitempty"`
 }
 
-// MaxHookLine è la lunghezza massima di una riga sul socket.
-const MaxHookLine = 4096
+// Decision è la riga che il connettore scrive all'hook di permesso in attesa (§2.12): Behavior vuoto
+// = nessuna decisione, il prompt nel terminale resta l'unica via.
+type Decision struct {
+	Behavior string `json:"behavior,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+// MaxHookLine è la lunghezza massima di una riga sul socket: il contesto di un permesso (16 KiB) più
+// i metadati.
+const MaxHookLine = 20 << 10
+
+// PermissionHandler prende in carico la connessione di un hook di permesso, che resta aperta finché
+// arriva la risposta dalla card o scade la finestra (§2.12).
+type PermissionHandler interface {
+	HandlePermission(m HookMessage, c net.Conn)
+}
 
 // StateFor traduce un evento di Claude Code nello stato comune (tabella di §1.21). ok=false per gli
 // eventi che non producono stati.
@@ -45,6 +65,12 @@ func StateFor(m HookMessage) (state, waitingFor string, ok bool) {
 		case "idle_prompt":
 			return protocol.StateWaiting, protocol.WaitUnknown, true
 		}
+	case "PermissionRequest":
+		return protocol.StateWaiting, protocol.WaitPermission, true
+	case "PostToolUse":
+		// Fetta 2 (§1.21 «Hook di permesso», §2.12): lo strumento ha girato, l'agente lavora; serve a
+		// chiudere subito una richiesta di permesso risolta nel terminale.
+		return protocol.StateWorking, "", true
 	case "Stop":
 		return protocol.StateFinished, "", true
 	case "StopFailure":
@@ -60,7 +86,10 @@ type Appender interface {
 	Append(kind string, data any) (protocol.Event, error)
 }
 
-type key struct{ agent, state, waiting string }
+type key struct{ agent, state, waiting, requestID string }
+
+// Transition è ciò che un osservatore vede a ogni stato scritto nel giornale.
+type Transition struct{ Session, Agent, State, WaitingFor, RequestID string }
 
 // Tracker tiene l'ultimo stato per sessione e scrive agent.state solo alle transizioni.
 type Tracker struct {
@@ -71,6 +100,17 @@ type Tracker struct {
 	mu          sync.Mutex
 	last        map[string]key
 	adapterSeen map[string]time.Time // ultimo stato da un adattatore, per escludere il timer generico
+	observers   []func(Transition)
+
+	// Permission, se presente, riceve le connessioni degli hook PermissionRequest (fetta 2).
+	Permission PermissionHandler
+}
+
+// OnTransition registra un osservatore chiamato, fuori dal lock, a ogni stato scritto nel giornale.
+func (t *Tracker) OnTransition(fn func(Transition)) {
+	t.mu.Lock()
+	t.observers = append(t.observers, fn)
+	t.mu.Unlock()
 }
 
 // NewTracker crea il tracker.
@@ -86,14 +126,20 @@ func NewTracker(j Appender, now func() time.Time, log *slog.Logger) *Tracker {
 
 // Apply registra uno stato. Restituisce true se è una transizione (e quindi è stato scritto).
 func (t *Tracker) Apply(session, agent, state, source, waitingFor string) (bool, error) {
+	return t.ApplyRequest(session, agent, state, source, waitingFor, "")
+}
+
+// ApplyRequest è Apply con il requestId di una richiesta aperta (§2.9 punto 1): un permesso nuovo
+// sulla stessa sessione è una transizione anche se lo stato non cambia.
+func (t *Tracker) ApplyRequest(session, agent, state, source, waitingFor, requestID string) (bool, error) {
 	if !protocol.IsSessionName(session) {
 		return false, errors.New("nome di sessione fuori regola")
 	}
 	if state != protocol.StateWaiting {
-		waitingFor = ""
+		waitingFor, requestID = "", ""
 	}
 	t.mu.Lock()
-	k := key{agent, state, waitingFor}
+	k := key{agent, state, waitingFor, requestID}
 	if source != protocol.SourceIdle {
 		t.adapterSeen[session] = t.now()
 	}
@@ -102,14 +148,18 @@ func (t *Tracker) Apply(session, agent, state, source, waitingFor string) (bool,
 		return false, nil
 	}
 	t.last[session] = k
+	obs := append([]func(Transition){}, t.observers...)
 	t.mu.Unlock()
 	_, err := t.j.Append(protocol.KindAgentState, protocol.AgentState{
-		Session: session, Agent: agent, State: state, Source: source, WaitingFor: waitingFor,
+		Session: session, Agent: agent, State: state, Source: source, WaitingFor: waitingFor, RequestID: requestID,
 	})
 	if err != nil {
 		return true, err
 	}
 	t.log.Info("stato dell'agente", "sessione", session, "agente", agent, "stato", state, "attesa", waitingFor)
+	for _, fn := range obs {
+		fn(Transition{Session: session, Agent: agent, State: state, WaitingFor: waitingFor, RequestID: requestID})
+	}
 	return true, nil
 }
 
@@ -171,7 +221,12 @@ func Listen(ctx context.Context, path string, t *Tracker) error {
 }
 
 func (t *Tracker) serve(c net.Conn) {
-	defer c.Close()
+	keep := false
+	defer func() {
+		if !keep {
+			c.Close()
+		}
+	}()
 	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 	sc := bufio.NewScanner(io.LimitReader(c, MaxHookLine+1))
 	sc.Buffer(make([]byte, MaxHookLine+1), MaxHookLine+1)
@@ -183,9 +238,56 @@ func (t *Tracker) serve(c net.Conn) {
 		t.log.Warn("riga di hook non valida, scartata")
 		return
 	}
+	if m.Event == "PermissionRequest" {
+		t.mu.Lock()
+		h := t.Permission
+		t.mu.Unlock()
+		if h == nil {
+			return // senza gestore delle richieste l'hook esce subito: il prompt resta nel terminale
+		}
+		// La connessione passa al gestore, che la tiene aperta per tutta la finestra: non deve
+		// fermare la coda degli altri hook.
+		_ = c.SetDeadline(time.Time{})
+		keep = true
+		go h.HandlePermission(m, c)
+		return
+	}
 	if err := t.HandleHook(m); err != nil {
 		t.log.Warn("stato dell'agente non registrato", "errore", err.Error())
 	}
+}
+
+// Ask manda un hook di permesso al connettore attivo e aspetta la sua decisione (§2.12): la
+// connessione resta aperta finché la card risponde o la finestra scade. Senza connettore restituisce
+// subito nessuna decisione. Una decisione vuota = il prompt del terminale resta l'unica via.
+func Ask(path string, m HookMessage, connectTimeout, wait time.Duration) (Decision, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Decision{}, err
+	}
+	if len(raw) > MaxHookLine {
+		return Decision{}, errors.New("riga di hook troppo lunga")
+	}
+	c, err := net.DialTimeout("unix", path, connectTimeout)
+	if err != nil {
+		return Decision{}, err
+	}
+	defer c.Close()
+	_ = c.SetWriteDeadline(time.Now().Add(connectTimeout))
+	if _, err := c.Write(append(raw, '\n')); err != nil {
+		return Decision{}, err
+	}
+	_ = c.SetReadDeadline(time.Now().Add(wait))
+	sc := bufio.NewScanner(io.LimitReader(c, MaxHookLine+1))
+	sc.Buffer(make([]byte, MaxHookLine+1), MaxHookLine+1)
+	if !sc.Scan() {
+		return Decision{}, nil // connettore fermato o finestra chiusa senza riga: nessuna decisione
+	}
+	var d Decision
+	if err := protocol.DecodeStrict(sc.Bytes(), &d); err != nil {
+		return Decision{}, err
+	}
+	return d, nil
 }
 
 // Send manda una riga al connettore attivo; errore se non risponde entro il tempo.

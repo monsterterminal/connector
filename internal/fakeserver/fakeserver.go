@@ -48,10 +48,11 @@ type host struct {
 	events    []protocol.Event
 	hits      []time.Time
 	// terminale (§1.7)
-	output  map[uint32][]byte
-	frames  []int // dimensione di ogni frame di output ricevuto
-	replies map[string]protocol.Envelope
-	closed  []protocol.SessionClosed
+	output   map[uint32][]byte
+	frames   []int // dimensione di ogni frame di output ricevuto
+	replies  map[string]protocol.Envelope
+	closed   []protocol.SessionClosed
+	contexts []protocol.RequestContext
 }
 
 // Rejection è un rifiuto dell'upgrade preparato da un test.
@@ -555,6 +556,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					h.closed = append(h.closed, c)
 				}
 			}
+			if env.Type == protocol.TypeRequestContext {
+				var c protocol.RequestContext
+				if json.Unmarshal(env.Body, &c) == nil {
+					h.contexts = append(h.contexts, c)
+				}
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -625,6 +632,16 @@ func (s *Server) SendInput(hostID string, ch uint32, data []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return c.Write(ctx, websocket.MessageBinary, protocol.EncodeFrame(protocol.FrameInput, ch, data))
+}
+
+// Contexts sono i request.context ricevuti dall'host (§2.9 punto 2), nell'ordine di arrivo.
+func (s *Server) Contexts(hostID string) []protocol.RequestContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]protocol.RequestContext(nil), h.contexts...)
+	}
+	return nil
 }
 
 // Reply restituisce la risposta del connettore al messaggio id, se è arrivata.

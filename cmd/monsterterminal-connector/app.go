@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ciarasino/monsterterminal-connector/internal/agents"
 	"github.com/ciarasino/monsterterminal-connector/internal/hostinfo"
 	"github.com/ciarasino/monsterterminal-connector/internal/journal"
 	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
@@ -57,6 +58,9 @@ type app struct {
 	executable func() (string, error)
 	// paneSession ricava la sessione tmux di un pannello (comando hook).
 	paneSession func(pane string) (string, error)
+	// sessionProbe legge se un client è collegato e attivo sulla sessione (finestra adattiva, §2.12);
+	// nil = tmux sul socket tmuxSocket.
+	sessionProbe agents.SessionProbe
 }
 
 func defaultApp() app {
@@ -230,6 +234,11 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	if err != nil {
 		return err
 	}
+	lock, err := lockStateDir(stateDir)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	j, err := journal.Open(filepath.Join(stateDir, "journal"), journal.Options{Now: a.now})
 	if err != nil {
 		return fmt.Errorf("giornale degli eventi: %w", err)
@@ -237,8 +246,9 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	if err := a.recordStart(log, j, stateDir); err != nil {
 		return err
 	}
-	// Stati degli agenti (spec §1.21): socket degli hook di Claude Code e timer di inattività.
-	thresholds := a.startAgents(ctx, log, j, stateDir)
+	// Stati degli agenti (spec §1.21): socket degli hook di Claude Code, timer di inattività e
+	// richieste di permesso (§2.12).
+	thresholds, requests := a.startAgents(ctx, log, j, stateDir)
 	cfg := transport.Config{
 		URL:        "wss://" + strings.TrimPrefix(server, "https://") + "/v1",
 		Token:      tok,
@@ -246,6 +256,7 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 		Logger:     log,
 		Events:     j,
 		Terminal:   terminal.New(terminal.Config{Socket: a.tmuxSocket, Logger: log}),
+		Requests:   requests,
 		Now:        a.now,
 		Hello: func() protocol.Hello {
 			return protocol.Hello{

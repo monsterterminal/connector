@@ -44,6 +44,8 @@ func TestCorrispondenzaHookStati(t *testing.T) {
 		{"UserPromptSubmit", "", protocol.StateWorking, ""},
 		{"Notification", "permission_prompt", protocol.StateWaiting, protocol.WaitPermission},
 		{"Notification", "idle_prompt", protocol.StateWaiting, protocol.WaitUnknown},
+		{"PermissionRequest", "", protocol.StateWaiting, protocol.WaitPermission}, // fetta 2, §2.12
+		{"PostToolUse", "", protocol.StateWorking, ""},                            // fetta 2, §2.12
 		{"Stop", "", protocol.StateFinished, ""},
 		{"StopFailure", "", protocol.StateError, ""},
 		{"SessionEnd", "", protocol.StateIdle, ""},
@@ -258,6 +260,20 @@ func TestInstallazioneDegliHook(t *testing.T) {
 	for _, ev := range HookEvents {
 		if !strings.Contains(string(raw), bin+" hook -state-dir "+state+" "+ev) {
 			t.Errorf("manca l'hook di %s", ev)
+		}
+	}
+	// §1.21 «Hook di permesso»: solo PermissionRequest ha il timeout lungo (la finestra adattiva, §2.12).
+	var written map[string]any
+	_ = json.Unmarshal(raw, &written)
+	for _, ev := range HookEvents {
+		entry := written["hooks"].(map[string]any)[ev].([]any)[0].(map[string]any)
+		got := entry["hooks"].([]any)[0].(map[string]any)["timeout"].(float64)
+		want := float64(hookTimeoutSeconds)
+		if ev == "PermissionRequest" {
+			want = PermissionHookTimeoutSeconds
+		}
+		if got != want {
+			t.Errorf("timeout di %s: %v, atteso %v", ev, got, want)
 		}
 	}
 	// Idempotente: nessuna scrittura, nessuna copia.

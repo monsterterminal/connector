@@ -8,6 +8,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ciarasino/monsterterminal-connector/internal/agents"
 	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
 	"github.com/ciarasino/monsterterminal-connector/internal/terminal"
 )
@@ -28,6 +29,14 @@ type Terminal interface {
 	Input(channel uint32, data []byte)
 	Detach(shutdown bool)
 	SetMaxChannels(n int)
+}
+
+// Requests gestisce le richieste dell'agente (§2.9, §2.12): request.respond in ingresso,
+// request.context e request.respond.result in uscita. nil = nessuna richiesta.
+type Requests interface {
+	Attach(out agents.Out)
+	Handle(env protocol.Envelope) bool
+	Detach()
 }
 
 var errOutputClosed = errors.New("connessione chiusa: output non più accettato")

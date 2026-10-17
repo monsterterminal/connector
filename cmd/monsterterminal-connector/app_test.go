@@ -49,6 +49,7 @@ type harness struct {
 	stderr    *syncBuf
 	boot      time.Time
 	panes     map[string]string // pannello tmux → sessione, per il comando hook
+	attached  bool              // un client collegato e attivo sulla sessione (finestra breve, §2.12)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -95,6 +96,7 @@ func (h *harness) app() app {
 			}
 			return "", errors.New("pannello sconosciuto")
 		},
+		sessionProbe: func(string) (bool, time.Time, bool) { return h.attached, time.Now(), true },
 	}
 }
 

@@ -209,3 +209,142 @@ func TestHooksFlagDopoLAzione(t *testing.T) {
 		t.Fatalf("argomento in più: uscita %d", code)
 	}
 }
+
+// Fetta 2 (spec §1.21 «Hook di permesso», §2.12): l'hook PermissionRequest porta il contesto al backend
+// fuori dal giornale, lo stato attende-input/permesso col requestId nel giornale, e resta in attesa;
+// request.respond dalla card diventa la decisione dell'hook e request.respond.result «consegnata».
+func TestHookDiPermessoFinoAllaCard(t *testing.T) {
+	h := newHarness(t)
+	conClaude(t, h, true)
+	h.panes = map[string]string{"%3": "lavoro"}
+	h.attached = true
+	h.hooks(t, "install", "-yes")
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	h.register(t)
+	id := hostIDFromStdout(t, h.stdout.String())
+	done, stop := h.start(t)
+	defer func() { stop(); waitExit(t, done) }()
+	waitHello(t, h.s)
+	eventually(t, "socket degli hook", func() bool { _, err := os.Stat(hookSocket(h.stateDir)); return err == nil })
+
+	type res struct {
+		code int
+		out  string
+	}
+	got := make(chan res, 1)
+	go func() {
+		code, out := h.hook("PermissionRequest", "%3", `{"session_id":"abc","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/segreto","description":"pulisce"}}`)
+		got <- res{code, out}
+	}()
+	eventually(t, "request.context al backend", func() bool { return len(h.s.Contexts(id)) == 1 })
+	ctx := h.s.Contexts(id)[0]
+	if ctx.Action != "Bash" || ctx.Detail != "rm -rf /tmp/segreto" || ctx.Kind != protocol.KindPermission || ctx.Deadline == "" {
+		t.Fatalf("contesto %+v", ctx)
+	}
+	eventually(t, "agent.state col requestId", func() bool {
+		st := stati(h, id)
+		return len(st) == 1 && st[0].RequestID == ctx.RequestID && st[0].WaitingFor == protocol.WaitPermission
+	})
+	for _, ev := range h.s.Events(id) {
+		if strings.Contains(string(ev.Data), "segreto") {
+			t.Fatalf("contesto nel giornale: %s", ev.Data)
+		}
+	}
+	select {
+	case r := <-got:
+		t.Fatalf("l'hook è uscito prima della risposta: %+v", r)
+	case <-time.After(300 * time.Millisecond):
+	}
+	rid, err := h.s.SendControl(id, protocol.TypeRequestRespond, protocol.RequestRespond{RequestID: ctx.RequestID, Answer: protocol.AnswerApprove})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "request.respond.result", func() bool { _, ok := h.s.Reply(id, rid); return ok })
+	reply, _ := h.s.Reply(id, rid)
+	var result protocol.RequestRespondResult
+	_ = json.Unmarshal(reply.Body, &result)
+	if reply.Type != protocol.TypeRequestRespondResult || result.Outcome != protocol.OutcomeDelivered || result.RequestID != ctx.RequestID {
+		t.Fatalf("esito %s %+v", reply.Type, result)
+	}
+	select {
+	case r := <-got:
+		if r.code != exitOK || !strings.Contains(r.out, `"hookEventName":"PermissionRequest"`) || !strings.Contains(r.out, `"behavior":"allow"`) {
+			t.Fatalf("hook: uscita %d, stdout %q", r.code, r.out)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("l'hook non è uscito dopo la risposta")
+	}
+	// Risposta tardiva: superata.
+	rid2, _ := h.s.SendControl(id, protocol.TypeRequestRespond, protocol.RequestRespond{RequestID: ctx.RequestID, Answer: protocol.AnswerDeny})
+	eventually(t, "secondo esito", func() bool { _, ok := h.s.Reply(id, rid2); return ok })
+	reply2, _ := h.s.Reply(id, rid2)
+	_ = json.Unmarshal(reply2.Body, &result)
+	if result.Outcome != protocol.OutcomeSuperseded {
+		t.Fatalf("risposta tardiva: %+v", result)
+	}
+}
+
+// §1.21 fatto 3: la risposta nel terminale non uccide l'hook; PostToolUse → lavora chiude la richiesta
+// e l'hook esce senza decisione (stdout vuoto). Senza strumento l'hook non apre niente.
+func TestHookDiPermessoSuperatoNelTerminale(t *testing.T) {
+	h := newHarness(t)
+	conClaude(t, h, true)
+	h.panes = map[string]string{"%3": "lavoro"}
+	h.hooks(t, "install", "-yes")
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	h.register(t)
+	id := hostIDFromStdout(t, h.stdout.String())
+	done, stop := h.start(t)
+	defer func() { stop(); waitExit(t, done) }()
+	waitHello(t, h.s)
+	eventually(t, "socket degli hook", func() bool { _, err := os.Stat(hookSocket(h.stateDir)); return err == nil })
+	if code, out := h.hook("PermissionRequest", "%3", `{"session_id":"abc"}`); code != exitOK || out != "" {
+		t.Fatalf("senza tool_name: %d %q", code, out)
+	}
+	type res struct {
+		code int
+		out  string
+	}
+	got := make(chan res, 1)
+	go func() {
+		code, out := h.hook("PermissionRequest", "%3", `{"tool_name":"Write","tool_input":{"file_path":"/tmp/a","content":"x"}}`)
+		got <- res{code, out}
+	}()
+	eventually(t, "request.context", func() bool { return len(h.s.Contexts(id)) == 1 })
+	if c := h.s.Contexts(id)[0]; c.Detail != `{"file_path":"/tmp/a","content":"x"}` {
+		t.Fatalf("contesto compatto atteso: %q", c.Detail)
+	}
+	h.hook("PostToolUse", "%3", `{"tool_name":"Write"}`)
+	select {
+	case r := <-got:
+		if r.code != exitOK || r.out != "" {
+			t.Fatalf("hook superato: %d %q", r.code, r.out)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("l'hook non è uscito al cambio di stato")
+	}
+	eventually(t, "lavora nel giornale", func() bool {
+		st := stati(h, id)
+		return len(st) == 2 && st[1].State == protocol.StateWorking
+	})
+}
+
+// TD-MT-CONNECTOR-SOCKET-LOCK: due run sulla stessa cartella di stato si cancellerebbero il socket a
+// vicenda; il secondo si ferma subito con un messaggio chiaro.
+func TestUnSoloConnettorePerCartellaDiStato(t *testing.T) {
+	h := newHarness(t)
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	h.register(t)
+	done, stop := h.start(t)
+	defer func() { stop(); waitExit(t, done) }()
+	waitHello(t, h.s)
+	h2 := *h
+	h2.stderr = &syncBuf{}
+	code := h2.app().run(context.Background(), h2.args("run"))
+	if code != exitError || !strings.Contains(h2.stderr.String(), "già in esecuzione") {
+		t.Fatalf("secondo run: uscita %d, stderr %q", code, h2.stderr.String())
+	}
+}

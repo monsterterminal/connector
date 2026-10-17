@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,8 +50,10 @@ func (a app) cmdHook(event, stateDir string) {
 		return
 	}
 	var in struct {
-		SessionID        string `json:"session_id"`
-		NotificationType string `json:"notification_type"`
+		SessionID        string          `json:"session_id"`
+		NotificationType string          `json:"notification_type"`
+		ToolName         string          `json:"tool_name"`
+		ToolInput        json.RawMessage `json:"tool_input"`
 	}
 	_ = json.Unmarshal(raw, &in)
 	session, err := a.paneSession(pane)
@@ -61,7 +64,60 @@ func (a app) cmdHook(event, stateDir string) {
 	if len(in.SessionID) <= 128 {
 		msg.ClaudeSession = in.SessionID
 	}
-	_ = agents.Send(hookSocket(stateDir), msg, time.Second)
+	if event != "PermissionRequest" {
+		_ = agents.Send(hookSocket(stateDir), msg, time.Second)
+		return
+	}
+	// Hook di permesso (§1.21 «Hook di permesso», §2.12): porta al connettore lo strumento e il suo
+	// input e aspetta la decisione dalla card per la finestra adattiva. Il prompt nel terminale
+	// compare comunque in parallelo: chi risponde prima vince.
+	if in.ToolName == "" {
+		return
+	}
+	msg.Action = in.ToolName
+	msg.Detail, msg.DetailTruncated = protocol.TruncateDetail(permissionDetail(in.ToolInput))
+	d, err := agents.Ask(hookSocket(stateDir), msg, time.Second, time.Duration(agents.PermissionHookTimeoutSeconds)*time.Second)
+	if err != nil || d.Behavior == "" {
+		return
+	}
+	out := map[string]any{"hookSpecificOutput": map[string]any{
+		"hookEventName": "PermissionRequest",
+		"decision":      permissionDecision(d),
+	}}
+	enc, err := json.Marshal(out)
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(a.stdout, string(enc))
+}
+
+// permissionDetail riduce tool_input al contesto della richiesta: il comando esatto quando c'è
+// (Bash), altrimenti l'input compatto. Mai altro che questo (§1.8: il giornale resta pulito; qui si
+// viaggia fuori dal giornale, §2.9 punto 2).
+func permissionDetail(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var cmd struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(input, &cmd) == nil && cmd.Command != "" {
+		return cmd.Command
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, input) == nil {
+		return compact.String()
+	}
+	return string(input)
+}
+
+// permissionDecision è l'oggetto decision dell'hook PermissionRequest di Claude Code.
+func permissionDecision(d agents.Decision) map[string]any {
+	out := map[string]any{"behavior": d.Behavior}
+	if d.Behavior == "deny" && d.Message != "" {
+		out["message"] = d.Message
+	}
+	return out
 }
 
 // cmdHooks installa o toglie gli hook di Claude Code, con la domanda di consenso (spec §1.21).
@@ -132,17 +188,19 @@ func (a app) cmdHooks(action, stateDir string, yes bool) error {
 	return nil
 }
 
-// startAgents avvia, per run, il socket degli hook e il timer di inattività.
-func (a app) startAgents(ctx context.Context, log *slog.Logger, j *journal.Journal, stateDir string) *agents.Thresholds {
+// startAgents avvia, per run, il socket degli hook, il timer di inattività e il gestore delle
+// richieste di permesso (§2.12).
+func (a app) startAgents(ctx context.Context, log *slog.Logger, j *journal.Journal, stateDir string) (*agents.Thresholds, *agents.Requests) {
 	tr := agents.NewTracker(j, a.now, log)
 	th := agents.NewThresholds()
+	rq := agents.NewRequests(agents.RequestsConfig{Socket: a.tmuxSocket, Now: a.now, Logger: log, Probe: a.sessionProbe}, tr)
 	go func() {
 		if err := agents.Listen(ctx, hookSocket(stateDir), tr); err != nil {
 			log.Warn("socket degli hook non disponibile: gli stati di Claude Code non arrivano", "errore", err.Error())
 		}
 	}()
 	go tr.WatchIdle(ctx, agents.IdleConfig{Socket: a.tmuxSocket}, th)
-	return th
+	return th, rq
 }
 
 // capabilities dichiarate in hello (§1.6): `hooks` se gli hook di Claude Code sono installati.

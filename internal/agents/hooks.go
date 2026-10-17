@@ -11,11 +11,24 @@ import (
 	"time"
 )
 
-// HookEvents sono gli eventi di Claude Code che l'adattatore ascolta (spec §1.21).
-var HookEvents = []string{"UserPromptSubmit", "Notification", "Stop", "StopFailure", "SessionEnd"}
+// HookEvents sono gli eventi di Claude Code che l'adattatore ascolta (spec §1.21; PermissionRequest
+// e PostToolUse dalla fetta 2, §2.12).
+var HookEvents = []string{"UserPromptSubmit", "Notification", "PermissionRequest", "PostToolUse", "Stop", "StopFailure", "SessionEnd"}
 
 // hookTimeoutSeconds: il comando `hook` esce subito; il tetto protegge Claude Code se il socket non risponde.
 const hookTimeoutSeconds = 10
+
+// PermissionHookTimeoutSeconds: l'hook di permesso aspetta la risposta dalla card per tutta la
+// finestra adattiva, al più 60 minuti (§2.12); un minuto in più perché sia il connettore a chiuderla.
+const PermissionHookTimeoutSeconds = 3660
+
+// HookTimeout è il timeout scritto nelle impostazioni per l'evento.
+func HookTimeout(event string) int {
+	if event == "PermissionRequest" {
+		return PermissionHookTimeoutSeconds
+	}
+	return hookTimeoutSeconds
+}
 
 // FindClaude cerca Claude Code sull'host: nel PATH, poi nei percorsi d'installazione più comuni.
 func FindClaude(home string) (string, bool) {
@@ -187,7 +200,7 @@ func Install(path, bin, stateDir string, now time.Time) (changed bool, backup st
 			continue
 		}
 		hm[ev] = append(list, map[string]any{
-			"hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": hookTimeoutSeconds}},
+			"hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": HookTimeout(ev)}},
 		})
 		changed = true
 	}

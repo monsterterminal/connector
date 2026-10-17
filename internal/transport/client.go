@@ -99,6 +99,8 @@ type Config struct {
 
 	// Terminal gestisce i canali del terminale (§1.7); nil = nessun terminale.
 	Terminal Terminal
+	// Requests gestisce le richieste dell'agente (§2.9, §2.12); nil = nessuna richiesta.
+	Requests Requests
 	// Coda dell'output del terminale: soglie della contropressione e accorpamento (§1.7).
 	OutputHighWater, OutputLowWater int
 	OutputFlushDelay                time.Duration
@@ -333,6 +335,12 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		}()
 	}
 
+	if cfg.Requests != nil {
+		// Dopo welcome: le richieste ancora aperte rimandano il loro contesto (§2.12).
+		cfg.Requests.Attach(&termOut{ctx: sctx, cfg: cfg, w: w})
+		defer cfg.Requests.Detach()
+	}
+
 	st := newSyncState()
 	sendErr := make(chan error, 1)
 	if cfg.Events != nil {
@@ -380,6 +388,9 @@ func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, d
 		return nil
 	}
 	if cfg.Terminal != nil && cfg.Terminal.Handle(env) {
+		return nil
+	}
+	if cfg.Requests != nil && cfg.Requests.Handle(env) {
 		return nil
 	}
 	switch env.Type {

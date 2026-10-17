@@ -7,9 +7,9 @@ anche quando il collegamento cade.
 > Stato: **seconda fetta**, allineata al gateway vero (ADR 0409, verbale 2026-10-13). Registrazione e
 > sostituzione dell'host, collegamento in uscita con heartbeat, ricollegamento, revoca e kill-switch,
 > giornale degli eventi con conferme del backend, canali del terminale sulle sessioni tmux, stati degli
-> agenti AI (Claude Code con hook, livello generico con timer di inattività). Eventi prodotti:
-> `connector.restarted` e `agent.state`. Non ci sono ancora richieste con risposta dalla card, catalogo né
-> aggiornamenti. Schemi del protocollo 0.2.0.
+> agenti AI (Claude Code con hook, livello generico con timer di inattività), richieste di permesso con
+> risposta dalla card (§2.12). Eventi prodotti: `connector.restarted` e `agent.state`; messaggi fuori dal
+> giornale: `request.context`, `request.respond.result`. Non ci sono ancora catalogo né aggiornamenti. Schemi del protocollo 0.3.0.
 
 ## Uso
 
@@ -59,7 +59,19 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   hook <evento>`, che ricava la sessione tmux da `TMUX_PANE` e la passa al connettore su un socket locale
   (`hook.sock` nella cartella di stato, `0600`); il connettore scrive `agent.state` nel giornale solo
   quando lo stato cambia. Solo metadati: mai prompt, output o comandi. Il comando `hook` non blocca mai
-  Claude Code e non scrive nulla. Le sessioni senza adattatore da 30 minuti passano sotto il timer di
+  Claude Code e non scrive nulla, con una sola eccezione voluta: l'hook di permesso.
+- **Richieste di permesso** (§2.9, §2.12; §1.21 «Hook di permesso»): `hook PermissionRequest` porta al
+  connettore lo strumento e il comando esatto; il connettore manda `request.context` al backend fuori
+  dal giornale, scrive `attende-input`/`permesso` col `requestId`, e tiene l'hook in attesa della
+  risposta dalla card per la finestra adattiva: 2 minuti se un client è collegato e attivo sulla
+  sessione tmux, 60 minuti altrimenti. Il prompt nel terminale compare comunque, in parallelo: chi
+  risponde prima vince. `request.respond` dalla card diventa la decisione dell'hook (`approva` →
+  allow; `nega` e `testo` → deny, col testo come motivo) con esito `consegnata`; una risposta tardiva o
+  su una richiesta chiusa ha esito `superata`. La risposta data nel terminale chiude la richiesta al
+  cambio di stato (`PostToolUse` → `lavora`). Una sola richiesta aperta per sessione; dopo ogni
+  `welcome` si rimanda il contesto delle richieste aperte.
+- **Un solo connettore per cartella di stato**: `run` prende un lock (`run.lock`); un secondo avvio sulla
+  stessa cartella esce con codice `1` e un messaggio. Le sessioni senza adattatore da 30 minuti passano sotto il timer di
   inattività (soglia della configurazione dell'host, 5 minuti di default), letto dall'attività di tmux.
 - **Rifiuti transitori**: `429 RATE_LIMITED` e `503 UNAVAILABLE` all'upgrade non si ritentano prima del
   `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale.
