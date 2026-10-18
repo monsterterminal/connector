@@ -69,7 +69,7 @@ func (e *APIError) Hint() string {
 	case "BODY_INVALID":
 		return "dati dell'host non accettati; il token di installazione NON è stato consumato e si può riusare dopo la correzione"
 	case "HOST_DISABLED":
-		return "questa macchina è fermata dal kill-switch del tenant; va riattivata dal pannello (il token di installazione NON è stato consumato)"
+		return "registrazione rifiutata (HOST_DISABLED): o questa macchina è fermata dal kill-switch del tenant, da riattivare dal pannello, oppure lo spazio di lavoro non ha un abbonamento attivo (stato del billing «none», prova scaduta, sola lettura o chiuso: l'owner lo avvia dalla pagina del billing). Il token di installazione NON è stato consumato: rilanciare dopo"
 	case "SERVER_LIMIT":
 		return "il tenant ha raggiunto gli host inclusi nel piano; attivare l'extra o revocare un host dal pannello"
 	case "CONNECTOR_TOO_OLD":
