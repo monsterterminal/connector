@@ -78,13 +78,17 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Riferimenti
 
-- ADR 0409 — il connettore; ADR 0410 — agenti AI, stato comune, catalogo di ricette (monorepo MonsterApp).
-- Spec `docs/spec/monsterterminal-saas.md`, capitolo 1: il protocollo tra connettore e backend.
-- Schemi del protocollo: [`schemas/0.1.0/`](schemas/0.1.0/README.md).
+- Schemi del protocollo: [`schemas/0.3.0/`](schemas/0.3.0/README.md) (fonte unica del contratto; le
+  versioni precedenti restano nelle loro cartelle).
+- **Documentazione interna.** Il codice e i commenti citano per numero le decisioni architetturali
+  (ADR 0409 il connettore, ADR 0410 gli agenti AI e il catalogo) e per sezione (`§1.x`, `§2.x`) la
+  specifica `monsterterminal-saas.md` di MonsterTerminal. Vivono nel repository privato di MonsterApp:
+  sono riferimenti per chi sviluppa il backend, non prerequisiti per leggere questo codice. Ciò che il
+  connettore fa è descritto qui e negli schemi.
 
 ## Requisiti
 
-- Go 1.27 o superiore per la compilazione. Dipendenze: `github.com/coder/websocket`,
+- Go 1.27 o superiore per la compilazione (modulo `github.com/monsterterminal/connector`). Dipendenze: `github.com/coder/websocket`,
   `github.com/creack/pty`.
 - Sull'host: `tmux` per il terminale.
 - Destinazione: Linux delle famiglie Debian/Ubuntu e Red Hat, x86-64 e ARM64. Eseguibile unico, senza
@@ -125,6 +129,17 @@ sostituzione, collegamento, caduta e ricollegamento, revoca, kill-switch, heartb
 fidato, consegna e riallineamento degli eventi, troncamenti, limiti di invio, 429/503/1011, il
 terminale su un server tmux privato (non tocca le sessioni dell'utente; i test si saltano senza
 `tmux`), e il cablaggio del comando in `cmd/`.
+
+## Installazione
+
+Lo script d'installazione (`https://monsterterminal.com/install.sh`: utente dedicato, servizio
+`systemd`, verifica d'integrità e firma dei rilasci) è in preparazione; fino al primo rilascio
+firmato il connettore si compila dai sorgenti con `go build ./cmd/monsterterminal-connector`.
+
+## Sicurezza e contributi
+
+Per segnalare una vulnerabilità: [`SECURITY.md`](SECURITY.md) (support@monsterterminal.com).
+Per contribuire: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Licenza
 
