@@ -429,3 +429,36 @@ func TestAskSulSocket(t *testing.T) {
 		t.Fatal("Ask senza connettore riuscito")
 	}
 }
+
+// §1.21: la Notification permission_prompt che segue il PermissionRequest (stessa attesa, senza
+// requestId) non chiude la richiesta e non scrive un secondo agent.state (prova dal vivo 2026-10-18:
+// la richiesta risultava «superata» sei secondi dopo l'apertura e l'allow della card non arrivava).
+func TestLaNotificaDiPermessoNonSuperaLaRichiesta(t *testing.T) {
+	b := newBench(t, true)
+	hook, ctx := b.open(t, "lavoro", "Bash", "ls")
+	defer hook.Close()
+	if err := b.tr.HandleHook(HookMessage{Event: "Notification", Session: "lavoro", NotificationType: "permission_prompt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readLine(hook, 300*time.Millisecond); ok {
+		t.Fatal("la notifica di permesso ha chiuso la richiesta")
+	}
+	if n := len(b.j.all()); n != 1 {
+		t.Fatalf("agent.state nel giornale: %d, atteso 1 (nessun doppione)", n)
+	}
+	env := respond(b, ctx.RequestID, protocol.AnswerApprove, "")
+	if r := lastResult(t, b, env.ID); r.Outcome != protocol.OutcomeDelivered {
+		t.Fatalf("la risposta dopo la notifica doveva essere consegnata: %+v", r)
+	}
+	if d, ok := readDecision(t, hook, time.Second); !ok || d.Behavior != "allow" {
+		t.Fatalf("decisione %+v %v", d, ok)
+	}
+	// Un'attesa «sconosciuta» (idle_prompt) è invece un'attesa diversa: la richiesta si chiude.
+	b2 := newBench(t, true)
+	hook2, _ := b2.open(t, "lavoro", "Bash", "ls")
+	defer hook2.Close()
+	_ = b2.tr.HandleHook(HookMessage{Event: "Notification", Session: "lavoro", NotificationType: "idle_prompt"})
+	if d, ok := readDecision(t, hook2, time.Second); !ok || d.Behavior != "" {
+		t.Fatalf("idle_prompt doveva chiudere la richiesta senza decisione: %+v %v", d, ok)
+	}
+}

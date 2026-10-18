@@ -143,7 +143,17 @@ func (t *Tracker) ApplyRequest(session, agent, state, source, waitingFor, reques
 	if source != protocol.SourceIdle {
 		t.adapterSeen[session] = t.now()
 	}
-	if prev, ok := t.last[session]; ok && prev == k {
+	prev, had := t.last[session]
+	if had && prev == k {
+		t.mu.Unlock()
+		return false, nil
+	}
+	// La stessa attesa senza requestId non è una transizione: dopo un PermissionRequest arriva la
+	// Notification permission_prompt di Claude Code (§1.21), che dice la stessa cosa senza conoscere
+	// la richiesta. Se la cambiassimo di chiave chiuderemmo la richiesta appena aperta come superata
+	// (prova dal vivo del 2026-10-18) e scriveremmo un agent.state doppio nel giornale.
+	if had && requestID == "" && state == protocol.StateWaiting && prev.agent == agent &&
+		prev.state == state && prev.waiting == waitingFor && prev.requestID != "" {
 		t.mu.Unlock()
 		return false, nil
 	}
