@@ -19,7 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // Codici di chiusura del protocollo (§1.16).

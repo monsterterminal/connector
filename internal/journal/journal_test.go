@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // backend riproduce classifyEvent di connector-journal.service.ts (ADR 0409, spec §1.12 emendata

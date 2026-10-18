@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/agents"
-	"github.com/ciarasino/monsterterminal-connector/internal/journal"
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/journal"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // hookSocket è il socket locale degli hook nella cartella di stato (spec §1.21).

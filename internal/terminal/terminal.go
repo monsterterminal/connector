@@ -27,7 +27,7 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // Out è la connessione vista dai canali: messaggi di controllo e output in frame binari.

@@ -8,8 +8,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/journal"
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/journal"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // Limiti del backend per host (§1.17): 50 messaggi al secondo in finestra scorrevole, binari

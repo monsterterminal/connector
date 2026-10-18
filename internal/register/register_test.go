@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/fakeserver"
-	"github.com/ciarasino/monsterterminal-connector/internal/register"
+	"github.com/monsterterminal/connector/internal/fakeserver"
+	"github.com/monsterterminal/connector/internal/register"
 )
 
 const installTok = "mti_installazione-di-prova-0001"

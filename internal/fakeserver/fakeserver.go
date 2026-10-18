@@ -28,8 +28,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
-	"github.com/ciarasino/monsterterminal-connector/internal/register"
+	"github.com/monsterterminal/connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/register"
 )
 
 // HeaderCurrentHostToken è l'header con cui il connettore prova il possesso dell'host da sostituire.

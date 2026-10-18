@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/fakeserver"
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
-	"github.com/ciarasino/monsterterminal-connector/internal/terminal"
-	"github.com/ciarasino/monsterterminal-connector/internal/transport"
+	"github.com/monsterterminal/connector/internal/fakeserver"
+	"github.com/monsterterminal/connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/terminal"
+	"github.com/monsterterminal/connector/internal/transport"
 )
 
 type termRig struct {

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 type control struct {

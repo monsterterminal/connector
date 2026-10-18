@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/agents"
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // conClaude prepara una home con Claude Code in ~/.local/bin e toglie il claude vero dal PATH.

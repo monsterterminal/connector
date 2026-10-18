@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 func noSleep(context.Context, time.Duration) error { return nil }

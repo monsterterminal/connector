@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // Le richieste dell'agente (spec §2.9, §2.12; ADR 0410). Un hook PermissionRequest di Claude Code

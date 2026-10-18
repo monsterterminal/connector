@@ -8,9 +8,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/agents"
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
-	"github.com/ciarasino/monsterterminal-connector/internal/terminal"
+	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/terminal"
 )
 
 // Ritmo e contropressione dell'output del terminale (§1.7).

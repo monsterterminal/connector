@@ -1,4 +1,4 @@
-module github.com/ciarasino/monsterterminal-connector
+module github.com/monsterterminal/connector
 
 go 1.27.2
 

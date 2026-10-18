@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // HookMessage è la riga che il comando `hook` manda al connettore. Solo metadati (§1.21).

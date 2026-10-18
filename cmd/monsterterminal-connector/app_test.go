@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/fakeserver"
-	"github.com/ciarasino/monsterterminal-connector/internal/hostinfo"
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
-	"github.com/ciarasino/monsterterminal-connector/internal/register"
-	"github.com/ciarasino/monsterterminal-connector/internal/transport"
+	"github.com/monsterterminal/connector/internal/fakeserver"
+	"github.com/monsterterminal/connector/internal/hostinfo"
+	"github.com/monsterterminal/connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/register"
+	"github.com/monsterterminal/connector/internal/transport"
 )
 
 const (

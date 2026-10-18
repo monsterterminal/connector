@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // Livello generico (ADR 0410 D3, spec §1.21): una sessione senza adattatore da AdapterQuiet passa in

@@ -18,7 +18,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 var (

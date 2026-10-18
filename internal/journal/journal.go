@@ -31,7 +31,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ciarasino/monsterterminal-connector/internal/protocol"
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // Limiti del giornale (§1.12, decisione BOSS 2026-10-12).
