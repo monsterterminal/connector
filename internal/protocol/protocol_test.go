@@ -153,7 +153,7 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if fmt.Sprint(defs["agentState"].(map[string]any)["enum"]) != fmt.Sprint(AgentStates) {
 		t.Errorf("stati: schema %v, Go %v", defs["agentState"], AgentStates)
 	}
-	if Version != 1 || SchemaVersion != "0.4.0" {
+	if Version != 1 || SchemaVersion != "0.5.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }
