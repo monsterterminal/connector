@@ -48,9 +48,12 @@ Solo aggiunte, protocollo sempre `1`: un messaggio valido per 0.1.0 è valido an
 
 Solo aggiunte, protocollo sempre `1`: un messaggio valido per 0.3.0 è valido anche per 0.4.0.
 
-- `http/error.json`: `BILLING_REQUIRED`. Il backend lo usa, con HTTP 402 alla registrazione e al
-  rifiuto dell'upgrade e con la chiusura WebSocket `4402`, quando lo spazio di lavoro non ha un
-  abbonamento attivo (`free_expired`, `read_only`, `closed`; spec §3.13). `HOST_DISABLED` (403, `4403`)
+- `http/error.json`: `BILLING_REQUIRED`. Il backend lo usa quando lo spazio di lavoro non ha un
+  abbonamento attivo (spec §3.13), con due soglie diverse: alla REGISTRAZIONE (HTTP 402) in tutti gli
+  stati che la barriera rifiuta (conto `none`, `free_expired`, `read_only`, `closed`); all'UPGRADE
+  WebSocket (402) e nel giro periodico (chiusura `4402`) SOLO con conto `closed`. Con `free_expired` e
+  `read_only` l'host registrato resta collegato: sessioni e input li ferma già la barriera del browser,
+  e `free_expired` nasce dall'orologio senza un evento che lo accompagni. `HOST_DISABLED` (403, `4403`)
   resta per l'host fermato dal kill-switch del super o del tenant.
 - Header `X-MonsterTerminal-Schema: 0.4.0` su `POST /v1/register` e sull'upgrade di `GET /v1`: dichiara
   la versione degli schemi che il connettore implementa (§1.15). Regola del backend: header assente o
