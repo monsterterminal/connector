@@ -250,6 +250,11 @@ check_tools() {
 			|| die "questo openssl non conosce Ed25519: serve la 1.1.1 o successiva"
 		[ -n "$MT_UPDATES_PUBKEY_PEM" ] \
 			|| die "questo script non porta la chiave pubblica dei rilasci: non può verificare nulla (vedi SECURITY.md)"
+		# La chiave scritta qui deve avere l'impronta dichiarata: una copia corrotta o ritoccata a metà
+		# non installa niente.
+		fp=$(printf '%s\n' "$MT_UPDATES_PUBKEY_PEM" | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+		[ "$fp" = "$MT_UPDATES_PUBKEY_FINGERPRINT" ] \
+			|| die "la chiave pubblica in questo script non ha l'impronta attesa ($MT_UPDATES_PUBKEY_FINGERPRINT): copia corrotta, non installo"
 	else
 		msg "ATTENZIONE: --insecure-skip-signature, la firma del rilascio NON viene verificata."
 	fi
