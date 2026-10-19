@@ -20,7 +20,8 @@ jobs:
       - name: tmux per i test del terminale
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
       - name: formato
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo 'gofmt: file non formattati'; exit 1; }
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then gofmt -l .; echo "gofmt: file non formattati"; exit 1; fi
       - run: go vet ./...
       - run: go test -race ./...
 
