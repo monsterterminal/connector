@@ -1,5 +1,17 @@
 # Changelog
 
+## Connettore — 2026-10-19 (non rilasciato)
+
+- Repository pubblico `github.com/monsterterminal/connector` (Apache 2.0): module path rinominato,
+  SECURITY.md, CONTRIBUTING.md, CI.
+- `packaging/install.sh` (§1.14, ADR 0409 D5-D7): utente dedicato/esistente/root con conferma, verifica
+  della firma Ed25519 di `SHA256SUMS` e dello SHA-256 del binario, registrazione, servizio systemd,
+  `--uninstall`, `--dry-run`; banco di prova `packaging/install_test.sh`.
+- Rilasci: `release.yml` crea una bozza con build riproducibili, `SHA256SUMS`, manifest degli
+  aggiornamenti e `install.sh`; `scripts/firma-rilascio.sh` ricompila, confronta, firma e pubblica dal PC
+  di chi custodisce la chiave. La chiave pubblica nello script e nel binario arriva col primo rilascio
+  firmato; fino ad allora `install.sh` rifiuta di installare.
+
 ## Schemi 0.3.0 — 2026-10-17
 
 - Solo aggiunte rispetto a 0.2.0 (protocollo sempre 1): `deadline` opzionale in `request.context`

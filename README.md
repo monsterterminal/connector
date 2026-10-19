@@ -109,7 +109,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/update/` | aggiornamento firmato e ritorno alla versione precedente |
 | `internal/signing/` | verifica Ed25519 con le chiavi pubbliche incluse nel binario |
 | `schemas/<versione>/` | JSON Schema del protocollo, fonte unica del contratto |
-| `packaging/` | servizio systemd e script di installazione |
+| `packaging/` | script di installazione (`install.sh`) e il suo banco di prova |
 
 Le cartelle si creano quando arriva il codice che ci va dentro. Oggi esistono `cmd/monsterterminal-connector`,
 `internal/protocol`, `internal/register`, `internal/transport`, `internal/journal`, `internal/terminal`,
@@ -132,9 +132,35 @@ terminale su un server tmux privato (non tocca le sessioni dell'utente; i test s
 
 ## Installazione
 
-Lo script d'installazione (`https://monsterterminal.com/install.sh`: utente dedicato, servizio
-`systemd`, verifica d'integrità e firma dei rilasci) è in preparazione; fino al primo rilascio
-firmato il connettore si compila dai sorgenti con `go build ./cmd/monsterterminal-connector`.
+Il comando lo mostra la UI di MonsterTerminal, con un token di installazione monouso (§1.14):
+
+```
+curl -fsSL https://monsterterminal.com/install.sh | sudo env MONSTERTERMINAL_INSTALL_TOKEN=mti_… sh
+```
+
+Lo script (`packaging/install.sh`, POSIX sh) scarica il rilascio da GitHub, **verifica la firma
+Ed25519** di `SHA256SUMS` con la chiave pubblica scritta nello script e lo SHA-256 del binario, installa
+`/usr/local/bin/monsterterminal-connector`, crea l'utente dedicato `monsterterminal` (o usa quello
+indicato con `--user`, oppure `root` dopo conferma esplicita: ADR 0409 D5), registra l'host e installa
+il servizio `systemd` `monsterterminal-connector`. Il token dell'host finisce in
+`/var/lib/monsterterminal/host-token` (`0600`); le impostazioni decise dal cliente stanno in
+`/etc/monsterterminal/connector.conf` (`auto_update`, `catalog_install`: ADR 0409 D6, D7). Opzioni:
+`sh install.sh --help`; `--uninstall` rimuove tutto (l'host va poi revocato dalla UI).
+
+Lo script si ferma senza installare nulla se la firma del rilascio non è valida o se non porta la
+chiave pubblica: la verifica non è opzionale. `--insecure-skip-signature` esiste solo per istanze di
+prova e lo dichiara a voce alta.
+
+Fino al primo rilascio firmato il connettore si compila dai sorgenti con
+`go build ./cmd/monsterterminal-connector`.
+
+### Rilasci
+
+Al tag `vX.Y.Z` la CI compila in modo riproducibile, produce `SHA256SUMS`, i manifest degli
+aggiornamenti (§1.10) e `install.sh`, e crea una release **in bozza**. La CI non firma mai: la chiave
+privata non sta su GitHub né sui server di MonsterTerminal (§1.17). Chi custodisce la chiave ricompila
+in locale, confronta gli hash, firma e pubblica con `scripts/firma-rilascio.sh`. Come verificare un
+rilascio a mano: [`SECURITY.md`](SECURITY.md).
 
 ## Sicurezza e contributi
 

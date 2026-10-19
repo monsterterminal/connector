@@ -1,0 +1,56 @@
+# Rilascio: al tag vX.Y.Z la CI compila in modo riproducibile, calcola SHA256SUMS, scrive i manifest
+# degli aggiornamenti (§1.10) e riempie install.sh, poi crea una release in BOZZA. La CI NON firma
+# mai: la chiave privata non sta su GitHub né sul server (§1.17). La firma e la pubblicazione le fa
+# chi custodisce la chiave con scripts/firma-rilascio.sh.
+name: Release (bozza)
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  bozza:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: versione dal tag
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: build riproducibile linux/amd64 e linux/arm64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            GOARCH=$arch go build -trimpath -ldflags "-s -w -buildid= -X main.version=$VERSION" \
+              -o "dist/monsterterminal-connector_${VERSION}_linux_${arch}" ./cmd/monsterterminal-connector
+          done
+      - name: install.sh con la versione
+        run: sed "s/@VERSION@/$VERSION/" packaging/install.sh > dist/install.sh
+      - name: SHA256SUMS e manifest degli aggiornamenti
+        run: |
+          cd dist
+          sha256sum monsterterminal-connector_* install.sh > SHA256SUMS
+          for arch in amd64 arm64; do
+            name="monsterterminal-connector_${VERSION}_linux_${arch}"
+            sha=$(grep "  $name\$" SHA256SUMS | cut -d' ' -f1)
+            # forma canonica: chiavi in ordine alfabetico, senza spazi (§1.9/§1.10)
+            printf '{"arch":"%s","minProtocol":1,"os":"linux","sha256":"%s","url":"https://github.com/%s/releases/download/%s/%s","version":"%s"}' \
+              "$arch" "$sha" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$name" "$VERSION" > "update-manifest-linux-${arch}.json"
+          done
+          cat SHA256SUMS
+      - name: release in bozza
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "monsterterminal-connector $GITHUB_REF_NAME" \
+            --notes "Bozza creata dalla CI: diventa pubblica solo dopo la firma (scripts/firma-rilascio.sh). Vedi CHANGELOG.md." \
+            dist/*
