@@ -633,3 +633,22 @@ func TestRunCollegaIlTerminale(t *testing.T) {
 	_ = h.s.SendInput(id, 1, []byte("echo cablato-$((20+3))\r"))
 	eventually(t, "output dal tmux dell'host", func() bool { return strings.Contains(string(h.s.Output(id, 1)), "cablato-23") })
 }
+
+// 402 BILLING_REQUIRED alla registrazione (ADR 0418 D5): errore con la spiegazione che manda alla
+// pagina del billing, nessun file del token.
+func TestRegisterAbbonamentoMancante(t *testing.T) {
+	h := newHarness(t)
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.s.RequireBilling()
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	if code := h.register(t); code != exitError {
+		t.Fatalf("uscita %d", code)
+	}
+	out := h.stderr.String()
+	if !strings.Contains(out, "BILLING_REQUIRED") || !strings.Contains(out, "/admin/billing") || strings.Contains(out, "kill-switch") {
+		t.Fatalf("stderr senza la spiegazione giusta: %s", out)
+	}
+	if register.TokenExists(h.tokenFile) {
+		t.Fatal("file del token creato nonostante il rifiuto")
+	}
+}

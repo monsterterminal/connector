@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.4.0/messages/connector-to-backend/sessions.list.result.json",
+  "title": "sessions.list.result",
+  "description": "Elenco delle sessioni tmux dell'host (§1.6)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "sessions.list.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessions": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "$ref": "../../common.json#/$defs/sessionName"
+              },
+              "createdAt": {
+                "$ref": "../../common.json#/$defs/timestamp"
+              },
+              "attached": {
+                "type": "boolean"
+              },
+              "windows": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "agent": {
+                "$ref": "../../common.json#/$defs/agentId"
+              },
+              "state": {
+                "$ref": "../../common.json#/$defs/agentState"
+              }
+            },
+            "required": [
+              "name",
+              "createdAt",
+              "attached",
+              "windows"
+            ]
+          }
+        }
+      },
+      "required": [
+        "sessions"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}

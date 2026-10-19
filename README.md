@@ -37,8 +37,13 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Comportamento verso il gateway
 
-- **Registrazione** (§1.3): un rifiuto `400 BODY_INVALID` o `403 HOST_DISABLED` (macchina fermata dal
-  kill-switch) non consuma il token di installazione; il messaggio d'errore dice cosa fare.
+- **Registrazione** (§1.3): un rifiuto `400 BODY_INVALID`, `403 HOST_DISABLED` (macchina fermata dal
+  kill-switch) o `402 BILLING_REQUIRED` (spazio di lavoro senza abbonamento attivo, ADR 0418 D5) non
+  consuma il token di installazione; il messaggio d'errore dice cosa fare.
+- **Billing** (§3.13, ADR 0418 D5): ogni registrazione e ogni upgrade dichiarano la versione degli
+  schemi con `X-MonsterTerminal-Schema`; davanti a `402 BILLING_REQUIRED` o alla chiusura `4402` il
+  connettore ritenta ogni 15 minuti come dopo un kill-switch, e si riaggancia da solo quando il
+  tenant attiva l'abbonamento.
 - **Giornale** (§1.12): ogni evento si scrive sul disco prima di partire, con seq crescente; il
   backend conferma con `events.ack` e fa fede il suo segnalibro. Se il backend è indietro (`ACK_AHEAD`
   o un `events.ack` più basso) il giornale riallinea e dichiara gli eventi persi con un

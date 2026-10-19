@@ -26,6 +26,9 @@ import (
 const (
 	CloseRevoked  websocket.StatusCode = 4401
 	CloseDisabled websocket.StatusCode = 4403
+	// CloseBilling: spazio di lavoro senza abbonamento attivo (ADR 0418 D5, §3.13); si ritenta come
+	// dopo un kill-switch, così quando il tenant paga il connettore si riaggancia da solo.
+	CloseBilling  websocket.StatusCode = 4402
 	CloseNoHello  websocket.StatusCode = 4408
 	CloseReplaced websocket.StatusCode = 4409
 	CloseTooMany  websocket.StatusCode = 4429
@@ -43,6 +46,7 @@ var (
 	ErrTokenInvalid = errors.New("token dell'host non valido: serve una nuova registrazione")
 
 	errDisabled  = errors.New("host fermato dal kill-switch")
+	errBilling   = errors.New("spazio di lavoro senza abbonamento attivo: l'owner lo avvia da /admin/billing; nuovo tentativo ogni 15 minuti")
 	errHeartbeat = errors.New("nessun segnale dal backend entro il tempo dell'heartbeat")
 )
 
@@ -189,7 +193,7 @@ func Run(ctx context.Context, cfg Config) error {
 			return err
 		}
 		wait := cfg.Backoff.Next()
-		if errors.Is(err, errDisabled) && wait < DisabledMinWait {
+		if (errors.Is(err, errDisabled) || errors.Is(err, errBilling)) && wait < DisabledMinWait {
 			wait = DisabledMinWait
 		}
 		var ra *retryAfterError
@@ -216,6 +220,7 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 	lastSignal.Store(cfg.Now().UnixNano())
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+cfg.Token)
+	header.Set(protocol.HeaderSchema, protocol.SchemaVersion)
 	conn, resp, err := websocket.Dial(ctx, cfg.URL, &websocket.DialOptions{
 		HTTPClient: cfg.HTTPClient,
 		HTTPHeader: header,
@@ -461,6 +466,8 @@ func readErr(err error, heartbeat *atomic.Bool) error {
 		return ErrRevoked
 	case CloseDisabled:
 		return errDisabled
+	case CloseBilling:
+		return errBilling
 	case CloseInternal:
 		return fmt.Errorf("errore interno del backend (1011), nuovo tentativo: %w", err)
 	case -1:
@@ -489,6 +496,8 @@ func classifyHandshake(resp *http.Response, err error) error {
 		return ErrTokenInvalid
 	case resp.StatusCode == http.StatusForbidden && body.Code == "HOST_DISABLED":
 		return errDisabled
+	case resp.StatusCode == http.StatusPaymentRequired && body.Code == "BILLING_REQUIRED":
+		return errBilling
 	case resp.StatusCode == http.StatusTooManyRequests, resp.StatusCode == http.StatusServiceUnavailable:
 		// 429 RATE_LIMITED e 503 UNAVAILABLE sono transitori (§1.16, §1.17): si ritenta, mai prima
 		// del Retry-After se il backend lo indica.
