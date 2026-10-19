@@ -49,11 +49,12 @@ type host struct {
 	events    []protocol.Event
 	hits      []time.Time
 	// terminale (§1.7)
-	output   map[uint32][]byte
-	frames   []int // dimensione di ogni frame di output ricevuto
-	replies  map[string]protocol.Envelope
-	closed   []protocol.SessionClosed
-	contexts []protocol.RequestContext
+	output    map[uint32][]byte
+	frames    []int // dimensione di ogni frame di output ricevuto
+	replies   map[string]protocol.Envelope
+	closed    []protocol.SessionClosed
+	contexts  []protocol.RequestContext
+	reqClosed []protocol.RequestClosed
 }
 
 // Rejection è un rifiuto dell'upgrade preparato da un test.
@@ -645,6 +646,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					h.contexts = append(h.contexts, c)
 				}
 			}
+			if env.Type == protocol.TypeRequestClosed {
+				var c protocol.RequestClosed
+				if json.Unmarshal(env.Body, &c) == nil {
+					h.reqClosed = append(h.reqClosed, c)
+				}
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -723,6 +730,16 @@ func (s *Server) Contexts(hostID string) []protocol.RequestContext {
 	defer s.mu.Unlock()
 	if h := s.byID(hostID); h != nil {
 		return append([]protocol.RequestContext(nil), h.contexts...)
+	}
+	return nil
+}
+
+// RequestsClosed sono i request.closed ricevuti dall'host (§2.14), nell'ordine di arrivo.
+func (s *Server) RequestsClosed(hostID string) []protocol.RequestClosed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]protocol.RequestClosed(nil), h.reqClosed...)
 	}
 	return nil
 }

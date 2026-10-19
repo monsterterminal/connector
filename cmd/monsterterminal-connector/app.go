@@ -108,7 +108,7 @@ func (a app) run(ctx context.Context, args []string) int {
 	if cmd == "hook" {
 		// Chiamato da Claude Code: non deve mai bloccarlo né sporcare la sua uscita (spec §1.21).
 		if fs.NArg() == 1 {
-			a.cmdHook(fs.Arg(0), *stateDir)
+			a.cmdHook(ctx, fs.Arg(0), *stateDir)
 		}
 		return exitOK
 	}
