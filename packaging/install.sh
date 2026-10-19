@@ -249,6 +249,7 @@ check_tools() {
 		msg "ATTENZIONE: --insecure-skip-signature, la firma del rilascio NON viene verificata."
 	fi
 	if ! command -v tmux >/dev/null 2>&1; then
+		# shellcheck disable=SC1091
 		like=$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
 		msg "tmux non trovato: il terminale lo richiede. Installalo con: $(tmux_hint "$like")"
 	fi
@@ -429,6 +430,7 @@ main() {
 
 # Caricato dal banco di prova con MT_INSTALL_SOURCED=1: definisce le funzioni e non esegue nulla.
 if [ "${MT_INSTALL_SOURCED:-}" = 1 ]; then
+	# shellcheck disable=SC2317
 	return 0 2>/dev/null || exit 0
 fi
 main "$@"

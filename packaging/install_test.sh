@@ -5,6 +5,10 @@
 # (firma Ed25519 non valida ⇒ nessuna installazione), ADR 0409 D5, D6, D7.
 #
 #   sh packaging/install_test.sh      (anche con dash: dash packaging/install_test.sh)
+#
+# Le prove sono stringhe passate a eval dentro check: per shellcheck le variabili sembrano inutilizzate
+# e le espansioni fra apici singoli sbagliate, ma è la forma voluta del banco.
+# shellcheck disable=SC2016,SC2034,SC1091
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 fails=0
