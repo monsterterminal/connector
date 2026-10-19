@@ -9,8 +9,12 @@
   `--uninstall`, `--dry-run`; banco di prova `packaging/install_test.sh`.
 - Rilasci: `release.yml` crea una bozza con build riproducibili, `SHA256SUMS`, manifest degli
   aggiornamenti e `install.sh`; `scripts/firma-rilascio.sh` ricompila, confronta, firma e pubblica dal PC
-  di chi custodisce la chiave. La chiave pubblica nello script e nel binario arriva col primo rilascio
-  firmato; fino ad allora `install.sh` rifiuta di installare.
+  di chi custodisce la chiave.
+- Chiavi pubbliche `mt-updates-2026` e `mt-recipes-2026` (§1.17, generate il 2026-10-19 fuori dai
+  server) in `internal/signing` (verifica Ed25519 grezza e lettura dei manifest di aggiornamento
+  firmati, §1.10), in `packaging/install.sh` e in SECURITY.md con le impronte; un test confronta i tre
+  posti. `scripts/firma-rilascio.sh` rifiuta una chiave diversa da `mt-updates-2026`. Il primo
+  rilascio firmato è `v0.2.0`.
 
 ## Schemi 0.3.0 — 2026-10-17
 

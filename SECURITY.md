@@ -33,8 +33,7 @@ Lo stesso indirizzo vale per il servizio `monsterterminal.com` e per il protocol
 - Nei log non finiscono mai token, contenuto del terminale, prompt o output degli agenti.
 - Gli aggiornamenti e le ricette del catalogo sono firmati con Ed25519 da chiavi che non stanno sui
   server di MonsterTerminal; le chiavi pubbliche sono incluse nel binario. Un file con firma non
-  valida non si installa. Le chiavi pubbliche verranno elencate in questo file dal primo rilascio
-  firmato.
+  valida non si installa. Le chiavi pubbliche sono elencate in fondo a questo file.
 
 ## Verificare un rilascio
 
@@ -54,7 +53,30 @@ MonsterTerminal: la CI crea solo release in bozza, la firma la mette chi custodi
 
 ### Chiavi pubbliche
 
-| Uso | Nome | Chiave pubblica (PEM) |
-|---|---|---|
-| aggiornamenti e rilasci | `mt-updates-2026` | *in arrivo col primo rilascio firmato* |
-| ricette del catalogo | `mt-recipes-2026` | *in arrivo col primo rilascio firmato* |
+Generate il 2026-10-19 su una macchina fuori dai server di MonsterTerminal; le private non ne sono
+mai uscite. Le stesse chiavi stanno nel binario (`internal/signing`) e, quella degli aggiornamenti,
+in `packaging/install.sh`: un test confronta i tre posti. L'impronta è lo SHA-256 della chiave in
+forma DER (`openssl pkey -pubin -in FILE -outform DER | sha256sum`).
+
+**`mt-updates-2026`** — aggiornamenti e rilasci (`SHA256SUMS`, `install.sh`, manifest §1.10):
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAkb+An530Ndo71tCM0i6DByEV+XWkb4xo4/EC3wDWKlk=
+-----END PUBLIC KEY-----
+```
+
+Impronta: `90efb21f2321b1a530efff3973b5d8f4f354675af509958f3f08422cd1c43b0d`
+
+**`mt-recipes-2026`** — ricette del catalogo (ADR 0409 D7):
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAzdEkzqbCqbjnd5kDmEzdCtjuXXbEJZNXDZXQbsHS6Zs=
+-----END PUBLIC KEY-----
+```
+
+Impronta: `12fd1e92f867a787abb5a18d4b07d8cbaaac3363c10bd921cadce06bb85bbd54`
+
+Un cambio di chiave si annuncia qui e nel CHANGELOG con l'impronta nuova, e il rilascio che lo porta
+è firmato ancora con la chiave vecchia.

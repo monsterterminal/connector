@@ -99,6 +99,10 @@ printf 'altro' >"$tmp/bin"
 check "binario alterato ⇒ sha256 non corrisponde" '! verify_sha256 "$tmp/SHA256SUMS" "$tmp" bin'
 check "asset assente da SHA256SUMS rifiutato" '! verify_sha256 "$tmp/SHA256SUMS" "$tmp" altro'
 
+# --- la chiave scritta nello script è mt-updates-2026 (§1.17), la stessa di SECURITY.md ---
+check "chiave pubblica nello script = impronta dichiarata" '[ "$(printf "%s\n" "$MT_UPDATES_PUBKEY_PEM" | openssl pkey -pubin -outform DER | sha256sum | cut -d" " -f1)" = "$MT_UPDATES_PUBKEY_FINGERPRINT" ]'
+check "impronta dichiarata = 90efb21f2321…" '[ "$MT_UPDATES_PUBKEY_FINGERPRINT" = 90efb21f2321b1a530efff3973b5d8f4f354675af509958f3f08422cd1c43b0d ]'
+
 # --- check_tools: senza chiave pubblica nello script non si installa (§1.17) ---
 MT_UPDATES_PUBKEY_PEM="" MT_SKIP_SIGNATURE=no
 check "senza chiave pubblica lo script si ferma" '! (check_tools) 2>/dev/null'
