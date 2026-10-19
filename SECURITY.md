@@ -38,5 +38,23 @@ Lo stesso indirizzo vale per il servizio `monsterterminal.com` e per il protocol
 
 ## Verificare un rilascio
 
-Dal primo rilascio firmato, ogni release su GitHub porta `SHA256SUMS` e la sua firma staccata. La
-procedura di verifica sarà descritta qui e nel README.
+Ogni release su GitHub porta `SHA256SUMS` (gli hash di tutti gli asset) e `SHA256SUMS.sig`, la firma
+Ed25519 **grezza** (64 byte) fatta con la chiave degli aggiornamenti; lo stesso per `install.sh` e per
+i manifest `update-manifest-linux-*.json`. Con OpenSSL 1.1.1 o successivo:
+
+```
+openssl pkeyutl -verify -pubin -inkey mt-updates.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+`mt-updates.pub` è la chiave pubblica PEM elencata qui sotto; `install.sh` la porta scritta dentro e fa
+le stesse due verifiche prima di installare. La chiave privata non sta su GitHub né sui server di
+MonsterTerminal: la CI crea solo release in bozza, la firma la mette chi custodisce la chiave
+(`scripts/firma-rilascio.sh`) dopo aver ricompilato in locale e confrontato gli hash.
+
+### Chiavi pubbliche
+
+| Uso | Nome | Chiave pubblica (PEM) |
+|---|---|---|
+| aggiornamenti e rilasci | `mt-updates-2026` | *in arrivo col primo rilascio firmato* |
+| ricette del catalogo | `mt-recipes-2026` | *in arrivo col primo rilascio firmato* |
