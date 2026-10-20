@@ -13,7 +13,7 @@ set -eu
 
 # Riempiti dal workflow di rilascio (release.yml) e firmati dal BOSS insieme agli altri asset.
 MT_VERSION="@VERSION@"
-MT_RELEASES="https://github.com/monsterterminal/connector/releases/download"
+MT_DEFAULT_RELEASES="https://github.com/monsterterminal/connector/releases/download"
 # Chiave pubblica Ed25519 degli aggiornamenti «mt-updates-2026», PEM (§1.10, §1.17): la stessa di
 # SECURITY.md e di internal/signing nel binario. La chiave privata vive fuori dal server, sul PC di
 # chi custodisce i rilasci. Se fosse vuota lo script rifiuterebbe di installare, salvo
@@ -40,6 +40,7 @@ MT_ACCEPT_ROOT=no
 MT_AUTO_UPDATE=yes
 MT_CATALOG=yes
 MT_SERVER=$MT_DEFAULT_SERVER
+MT_RELEASES=$MT_DEFAULT_RELEASES
 MT_REPLACE=no
 MT_UNINSTALL=no
 MT_PURGE=no
@@ -61,6 +62,8 @@ uso: sh install.sh [opzioni]        (il token di installazione in MONSTERTERMINA
   --no-catalog            installazione dal catalogo spenta su questo host (ADR 0409 D7)
   --replace               sostituisce l'host già registrato su questa macchina (register -replace)
   --server URL            istanza diversa da https://connect.monsterterminal.com (prove)
+  --releases-url URL      base https da cui scaricare il rilascio, al posto di GitHub (banchi di
+                          prova); la firma resta verificata con la chiave scritta nello script
   --version X.Y.Z         versione da installare (default: quella scritta nello script)
   --insecure-skip-signature  NON verifica la firma dei rilasci: solo per prove, mai in produzione
   --uninstall [--purge]   rimuove servizio, binario e configurazione (--purge anche stato e token)
@@ -121,6 +124,12 @@ parse_args() {
 			shift
 			;;
 		--server=*) MT_SERVER=${1#--server=} ;;
+		--releases-url)
+			[ $# -ge 2 ] || usage_die "--releases-url vuole un URL"
+			MT_RELEASES=$2
+			shift
+			;;
+		--releases-url=*) MT_RELEASES=${1#--releases-url=} ;;
 		--version)
 			[ $# -ge 2 ] || usage_die "--version vuole X.Y.Z"
 			MT_WANT_VERSION=$2
@@ -145,6 +154,11 @@ parse_args() {
 	case "$MT_SERVER" in
 	https://*) ;;
 	*) usage_die "--server deve essere https://…" ;;
+	esac
+	MT_RELEASES=${MT_RELEASES%/}
+	case "$MT_RELEASES" in
+	https://*) ;;
+	*) usage_die "--releases-url deve essere https://…" ;;
 	esac
 	if [ -n "$MT_WANT_VERSION" ]; then
 		case "$MT_WANT_VERSION" in
@@ -320,7 +334,11 @@ download_release() {
 	MT_TMP=$(mktemp -d) || die "mktemp fallito"
 	chmod 0700 "$MT_TMP"
 	trap 'rm -rf "$MT_TMP"' EXIT INT TERM
-	msg "Scarico il rilascio v$MT_VERSION ($arch)…"
+	if [ "$MT_RELEASES" = "$MT_DEFAULT_RELEASES" ]; then
+		msg "Scarico il rilascio v$MT_VERSION ($arch)…"
+	else
+		msg "Scarico il rilascio v$MT_VERSION ($arch) da $MT_RELEASES (non da GitHub)…"
+	fi
 	fetch "$base/SHA256SUMS" "$MT_TMP/SHA256SUMS" || die "SHA256SUMS non scaricabile da $base"
 	if [ "$MT_SKIP_SIGNATURE" = no ]; then
 		fetch "$base/SHA256SUMS.sig" "$MT_TMP/SHA256SUMS.sig" || die "firma SHA256SUMS.sig non scaricabile"
