@@ -15,6 +15,9 @@
   firmati, §1.10), in `packaging/install.sh` e in SECURITY.md con le impronte; un test confronta i tre
   posti. `scripts/firma-rilascio.sh` rifiuta una chiave diversa da `mt-updates-2026`. Il primo
   rilascio firmato è `v0.2.0`.
+- `run -config FILE` (default `/etc/monsterterminal/connector.conf`): legge le impostazioni decise dal
+  cliente sull'host (`auto_update`, `catalog_install`) e le riporta in `hello` (§1.11), che prima
+  dichiarava sempre `false`. File assente = default accesi; file malformato = il servizio non parte.
 
 ## Schemi 0.3.0 — 2026-10-17
 

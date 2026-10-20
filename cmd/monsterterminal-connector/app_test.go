@@ -42,6 +42,7 @@ type harness struct {
 	s         *fakeserver.Server
 	dir       string
 	tokenFile string
+	confFile  string // impostazioni del cliente (§1.11); assente = default
 	stateDir  string
 	env       map[string]string
 	stdin     string
@@ -64,6 +65,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return &harness{
 		s: s, dir: dir, tokenFile: filepath.Join(dir, "etc", "host-token"),
+		confFile: filepath.Join(dir, "etc", "connector.conf"),
 		stateDir: filepath.Join(dir, "state"), env: map[string]string{},
 		stdout: &syncBuf{}, stderr: &syncBuf{}, boot: time.Now().Add(-24 * time.Hour),
 	}
@@ -101,7 +103,7 @@ func (h *harness) app() app {
 }
 
 func (h *harness) args(cmd string, extra ...string) []string {
-	return append([]string{cmd, "-server", h.s.BaseURL(), "-token-file", h.tokenFile, "-state-dir", h.stateDir}, extra...)
+	return append([]string{cmd, "-server", h.s.BaseURL(), "-token-file", h.tokenFile, "-state-dir", h.stateDir, "-config", h.confFile}, extra...)
 }
 
 func (h *harness) register(t *testing.T, extra ...string) int {
@@ -632,4 +634,59 @@ func TestRunCollegaIlTerminale(t *testing.T) {
 	eventually(t, "session.opened", func() bool { env, ok := h.s.Reply(id, mid); return ok && env.Type == protocol.TypeSessionOpened })
 	_ = h.s.SendInput(id, 1, []byte("echo cablato-$((20+3))\r"))
 	eventually(t, "output dal tmux dell'host", func() bool { return strings.Contains(string(h.s.Output(id, 1)), "cablato-23") })
+}
+
+// Spec §1.11: aggiornamenti automatici e installazione dal catalogo li decide il cliente sull'host,
+// nel file del connettore, e il connettore li riporta in hello. Senza file valgono i default (accesi).
+func TestRunRiportaLeImpostazioniDelClienteInHello(t *testing.T) {
+	h := newHarness(t)
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	if code := h.register(t); code != exitOK {
+		t.Fatalf("register: uscita %d\n%s", code, h.stderr.String())
+	}
+	done, cancel := h.start(t)
+	if hl := waitHello(t, h.s); !hl.AutoUpdateEnabled || !hl.CatalogInstallEnabled {
+		t.Fatalf("senza file i default sono accesi: %+v", hl)
+	}
+	cancel()
+	waitExit(t, done)
+
+	if err := os.WriteFile(h.confFile, []byte("# scelte del cliente\nuser=monsterterminal\nauto_update=no\ncatalog_install=yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done, cancel = h.start(t)
+	if hl := waitHello(t, h.s); hl.AutoUpdateEnabled || !hl.CatalogInstallEnabled {
+		t.Fatalf("auto_update=no deve arrivare in hello: %+v", hl)
+	}
+	cancel()
+	waitExit(t, done)
+	if !strings.Contains(h.stderr.String(), "aggiornamentiAutomatici=false") {
+		t.Fatalf("il log deve dire cosa ha letto:\n%s", h.stderr.String())
+	}
+}
+
+// Un file malformato ferma l'avvio con errore: non si parte coi default fingendo di averlo letto.
+func TestRunRifiutaConfigurazioneMalformata(t *testing.T) {
+	h := newHarness(t)
+	h.s.AddInstallToken(installTok, time.Hour)
+	h.env["MONSTERTERMINAL_INSTALL_TOKEN"] = installTok
+	if code := h.register(t); code != exitOK {
+		t.Fatalf("register: uscita %d\n%s", code, h.stderr.String())
+	}
+	if err := os.WriteFile(h.confFile, []byte("auto_updat=no\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done, _ := h.start(t)
+	if code := waitExit(t, done); code != exitError {
+		t.Fatalf("uscita %d, attesa %d", code, exitError)
+	}
+	select {
+	case <-h.s.Hellos():
+		t.Fatal("nessun hello deve partire con la configurazione malformata")
+	default:
+	}
+	if out := h.stderr.String(); !strings.Contains(out, "riga 1") || !strings.Contains(out, "auto_updat") {
+		t.Fatalf("l'errore deve indicare riga e chiave:\n%s", out)
+	}
 }

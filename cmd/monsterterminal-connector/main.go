@@ -3,7 +3,8 @@
 //	monsterterminal-connector register [-replace]   legge il token di installazione da
 //	                                                MONSTERTERMINAL_INSTALL_TOKEN o dalla prima
 //	                                                riga dello standard input
-//	monsterterminal-connector run                   si collega e resta collegato
+//	monsterterminal-connector run [-config FILE]    si collega e resta collegato; legge le impostazioni
+//	                                                del cliente da /etc/monsterterminal/connector.conf
 //	monsterterminal-connector version
 //
 // Il token di installazione non si passa mai come argomento: comparirebbe nell'elenco dei processi.
