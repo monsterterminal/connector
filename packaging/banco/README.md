@@ -62,9 +62,9 @@ lavoro vero, senza `--insecure-skip-signature`. `SHA256SUMS` è firmata con `ope
 | B7 | secondo `install.sh` con lo stesso comando, senza `--replace` | «Host già registrato», ancora 1 registrazione, servizio attivo |
 | B8 | `install.sh --replace` col secondo token | «Host sostituito», 2 registrazioni e la seconda con la prova di possesso (`X-MonsterTerminal-Host-Token`), `host-token` cambiato, il servizio riparte e si ricollega (≥2 collegamenti). Si osserva di passaggio anche il comportamento di B9: il processo vecchio riceve `4401`, esce con codice 3 e non ritenta |
 | B10 | `negative` N3: token ben formato ma sconosciuto | `HTTP 401 INSTALL_TOKEN_INVALID`, «registrazione fallita», nessun `host-token`, nessuna unit, servizio non attivo, 0 registrazioni |
-| §1.10 | `negative` N1: `SHA256SUMS.sig` firmata da **un'altra** chiave Ed25519 (firma perfetta, chiave sbagliata) | «la firma del rilascio NON è valida», uscita ≠ 0, il binario **non viene scaricato** (contatore nginx), binario/conf/unit/token invariati |
+| §1.10 | `negative` N1: `SHA256SUMS.sig` firmata da **un'altra** chiave Ed25519 (firma perfetta, chiave sbagliata), su host pulito | «la firma del rilascio NON è valida», uscita ≠ 0, il binario **non viene scaricato** (contatore nginx), binario/conf/unit/token invariati, **l'utente `monsterterminal` non esiste** (la verifica precede `ensure_user`, PR #9); un utente lasciato da un giro precedente viene tolto prima con `userdel -r` |
 | §1.14 | `negative` N2: token malformato (`mti_corto`) | «non ha la forma attesa», uscita ≠ 0, **nessuna richiesta** a `/releases/download/` |
-| `--uninstall --purge` | `uninstall` | unit assente, servizio né attivo né abilitato, binario assente, `/etc/monsterterminal` e `/var/lib/monsterterminal` assenti, nessun processo del connettore |
+| `--uninstall --purge` | `uninstall` | unit assente, servizio né attivo né abilitato, binario assente, `/etc/monsterterminal` e `/var/lib/monsterterminal` assenti, nessun processo del connettore; l'utente resta e lo script stampa il `userdel -r` da fare a mano |
 
 `up` verifica anche il banco stesso: systemd `running` nel container, `machine-id` generato,
 `releases.banco` raggiungibile in https con la CA del banco (`curl --proto '=https' --tlsv1.2`),
@@ -92,15 +92,13 @@ il banco non lo giudica.
 - Le distribuzioni oltre Ubuntu 24.04 (`debian:12`, `rockylinux:9`): basta un secondo
   `Dockerfile.host`, ma non è fatto.
 
-## Rilievi emersi dal primo giro (20/10/2026)
+## Rilievi del primo giro (20/10/2026) e loro esito
 
-- `ensure_user` precede `download_release`: con una **firma non valida** lo script non installa
-  nulla, ma l'utente `monsterterminal` è già stato creato. Innocuo, non elegante: da valutare se
-  spostare la creazione dopo la verifica (per mt8).
-- Su `401 INSTALL_TOKEN_INVALID` (B10) il binario e `connector.conf` restano installati
-  (`install_files` precede `register_host`); nessuna unit e nessun servizio. Coerente con la
-  logica «token non consumato, riprova con un token nuovo», ma la checklist lo dica.
-- `--uninstall --purge` non rimuove l'utente `monsterterminal` (documentato nello script).
+Chiusi con la PR #9: `download_release` precede `ensure_user` (con una firma non valida non resta
+nemmeno l'utente: asserzione N1), `--uninstall` dice che l'utente resta e stampa il `userdel -r`
+(asserzione in `uninstall`). Resta, documentato: su `401 INSTALL_TOKEN_INVALID` (B10) il binario e
+`connector.conf` restano installati (`install_files` precede `register_host`), nessuna unit e nessun
+servizio — coerente con «token non consumato, riprova con un token nuovo».
 
 ## Come è fatto
 

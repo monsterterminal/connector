@@ -394,6 +394,16 @@ cmd_negative() {
 	msg "host già installato: $installed (le prove negative non devono cambiare nulla)"
 
 	step "N1 — firma di un'altra chiave (perfetta ma non del banco) ⇒ «la firma del rilascio NON è valida»"
+	# La verifica della firma precede la creazione dell'utente (PR #9): su un host pulito, dopo N1,
+	# l'utente monsterterminal NON deve esistere. Un utente lasciato da un giro precedente si toglie
+	# prima, così l'asserzione vale a ogni rilancio; se l'host è registrato l'utente serve e si salta.
+	local user_check=yes
+	if [ "$installed" = yes ]; then
+		user_check=no
+	elif hx getent passwd monsterterminal >/dev/null 2>&1; then
+		msg "   utente monsterterminal di un giro precedente: lo tolgo (userdel -r) prima della prova"
+		hx userdel -r monsterterminal >/dev/null 2>&1 || true
+	fi
 	cp "$RELDIR/SHA256SUMS.sig" "$STATUS/SHA256SUMS.sig.buona"
 	openssl pkeyutl -sign -inkey "$KEYS/impostore.key" -rawin -in "$RELDIR/SHA256SUMS" -out "$RELDIR/SHA256SUMS.sig"
 	before=$(snapshot_host)
@@ -406,8 +416,10 @@ cmd_negative() {
 	assert "il binario NON è stato scaricato (nginx: $bin_before download prima e dopo)" test "$(binary_downloads)" = "$bin_before"
 	after=$(snapshot_host)
 	assert "binario, conf, unit e token invariati" test "$before" = "$after"
-	if [ "$installed" = no ] && hx getent passwd monsterterminal >/dev/null 2>&1; then
-		msg "   RILIEVO: l'utente monsterterminal viene creato PRIMA della verifica della firma (ensure_user precede download_release)"
+	if [ "$user_check" = yes ]; then
+		assert "utente monsterterminal NON creato (la firma si verifica prima di ensure_user)" hx_sh '! getent passwd monsterterminal >/dev/null 2>&1'
+	else
+		msg "   utente già presente (host registrato): la prova «utente non creato» si fa su un host pulito"
 	fi
 	assert "firma buona ripristinata e verificabile" openssl pkeyutl -verify -pubin -inkey "$KEYS/updates.pub" -rawin -in "$RELDIR/SHA256SUMS" -sigfile "$RELDIR/SHA256SUMS.sig"
 
@@ -452,9 +464,9 @@ cmd_uninstall() {
 	assert "/etc/monsterterminal assente" hx_sh '! test -e /etc/monsterterminal'
 	assert "/var/lib/monsterterminal assente (--purge)" hx_sh '! test -e /var/lib/monsterterminal'
 	assert "nessun processo del connettore" hx_sh '! pgrep -f "^/usr/local/bin/monsterterminal-connector run" >/dev/null'
-	if hx getent passwd monsterterminal >/dev/null 2>&1; then
-		msg "   nota: l'utente monsterterminal resta (install.sh non lo rimuove, come documentato nello script)"
-	fi
+	assert "l'utente monsterterminal resta e lo script lo dice con il comando userdel" \
+		sh -c "grep -q 'L.utente monsterterminal resta.*userdel -r monsterterminal' '$STATUS/uninstall.log'"
+	assert "utente monsterterminal ancora presente (non è compito dello script toglierlo)" hx getent passwd monsterterminal
 	verdict "uninstall"
 }
 
