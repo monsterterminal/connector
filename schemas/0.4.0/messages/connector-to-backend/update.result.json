@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.4.0/messages/connector-to-backend/update.result.json",
+  "title": "update.result",
+  "description": "Esito di un aggiornamento del connettore (§1.10)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "update.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "$ref": "../../common.json#/$defs/semver"
+        },
+        "outcome": {
+          "enum": [
+            "ok",
+            "failed",
+            "skipped",
+            "rolled-back"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "version",
+        "outcome"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

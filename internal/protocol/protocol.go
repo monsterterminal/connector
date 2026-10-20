@@ -19,7 +19,12 @@ import (
 const Version = 1
 
 // SchemaVersion è la versione degli schemi JSON che questo codice implementa (§1.19).
-const SchemaVersion = "0.3.0"
+const SchemaVersion = "0.4.0"
+
+// HeaderSchema dichiara al backend la versione degli schemi, su POST /v1/register e sull'upgrade
+// di GET /v1 (§1.15, ADR 0418 D5). Il backend decide da QUESTO header, chiamata per chiamata, se la
+// barriera del billing si presenta come BILLING_REQUIRED (da 0.4.0) o come HOST_DISABLED (prima).
+const HeaderSchema = "X-MonsterTerminal-Schema"
 
 // MaxFrameBytes è la dimensione massima di un frame (§1.2).
 const MaxFrameBytes = 1 << 20

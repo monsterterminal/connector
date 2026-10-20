@@ -21,6 +21,15 @@
 - `install.sh --releases-url URL` (solo https): base da cui scaricare il rilascio al posto di GitHub,
   per i banchi di prova; la firma resta verificata con la chiave scritta nello script.
 
+## Schemi 0.4.0 — 2026-10-18
+
+- Solo aggiunte rispetto a 0.3.0 (protocollo sempre 1): `BILLING_REQUIRED` in `http/error.json`
+  (ADR 0418 D5, spec §3.13): HTTP 402 alla registrazione e al rifiuto dell'upgrade, chiusura `4402`,
+  per lo spazio di lavoro senza abbonamento attivo. `HOST_DISABLED` resta al solo kill-switch.
+- Header `X-MonsterTerminal-Schema` su `POST /v1/register` e sull'upgrade (§1.15): il backend decide
+  da lì, chiamata per chiamata, se la barriera del billing si presenta come `BILLING_REQUIRED`
+  (da 0.4.0) o come `HOST_DISABLED` (connettori fino a 0.3.0).
+
 ## Schemi 0.3.0 — 2026-10-17
 
 - Solo aggiunte rispetto a 0.2.0 (protocollo sempre 1): `deadline` opzionale in `request.context`
@@ -40,7 +49,13 @@
 - `hooks install` scrive anche `PermissionRequest` (timeout 3660 s) e `PostToolUse`.
 - `run` prende un lock sulla cartella di stato: un secondo connettore sulla stessa cartella si ferma
   subito con un messaggio (TD-MT-CONNECTOR-SOCKET-LOCK).
-- Schemi 0.3.0 nel codice (`protocol.SchemaVersion`).
+- Schemi 0.4.0 nel codice (`protocol.SchemaVersion`), dichiarati con l'header
+  `X-MonsterTerminal-Schema` a ogni registrazione e upgrade.
+- `BILLING_REQUIRED` (ADR 0418 D5): alla registrazione il messaggio manda l'owner a `/admin/billing`
+  e il token di installazione resta valido; a `run` il rifiuto 402 e la chiusura 4402 si trattano
+  come un kill-switch (nuovo tentativo ogni 15 minuti, nessuna uscita), così quando il tenant attiva
+  l'abbonamento il connettore si riaggancia da solo. Il testo di `HOST_DISABLED` torna a parlare del
+  solo kill-switch.
 
 ## Schemi 0.2.0 — 2026-10-16
 

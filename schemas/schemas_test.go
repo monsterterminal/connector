@@ -14,8 +14,9 @@ import (
 )
 
 // Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12), 0.2.0 (aperta il 2026-10-16,
-// spec §1.15) e 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context). Ogni test gira su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0"}
+// spec §1.15), 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context) e 0.4.0 (aperta il
+// 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json). Ogni test gira su ognuna.
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -40,6 +41,16 @@ var wantMessages = map[string]map[string][]string{
 	// 0.3.0 (2026-10-17, spec §2.12): stesso vocabolario della 0.2.0; request.context riceve il campo
 	// opzionale deadline.
 	"0.3.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
+			"request.context", "request.respond.result", "session.closed", "session.opened", "sessions.list.result",
+			"update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "request.respond",
+			"session.close", "session.config", "session.open", "session.resize", "sessions.list", "update.available",
+			"welcome"},
+	},
+	// 0.4.0 (2026-10-18, ADR 0418 D5): stesso vocabolario della 0.3.0; cambia solo l'enum di
+	// http/error.json (BILLING_REQUIRED).
+	"0.4.0": {
 		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
 			"request.context", "request.respond.result", "session.closed", "session.opened", "sessions.list.result",
 			"update.result"},
@@ -328,4 +339,73 @@ func TestZeroTreEstendeZeroDue(t *testing.T) {
 	if _, ok := props(props(old["messages/connector-to-backend/request.context.json"])["body"])["deadline"]; ok {
 		t.Error("deadline non deve esistere in 0.2.0")
 	}
+}
+
+// TestZeroQuattroEstendeZeroTre: la 0.4.0 non toglie nulla alla 0.3.0 (file, proprietà, codici di
+// errore) e aggiunge il solo codice BILLING_REQUIRED a http/error.json (ADR 0418 D5, spec §3.13:
+// la barriera del billing smette di presentarsi come HOST_DISABLED ai connettori che dichiarano
+// X-MonsterTerminal-Schema ≥ 0.4.0).
+func TestZeroQuattroEstendeZeroTre(t *testing.T) {
+	old, cur := loadAll(t, "0.3.0"), loadAll(t, "0.4.0")
+	props := func(n any) map[string]any {
+		m, _ := n.(map[string]any)
+		p, _ := m["properties"].(map[string]any)
+		return p
+	}
+	codes := func(all map[string]map[string]any) map[string]bool {
+		out := map[string]bool{}
+		for _, c := range props(all["http/error.json"])["code"].(map[string]any)["enum"].([]any) {
+			out[c.(string)] = true
+		}
+		return out
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.4.0", rel)
+			continue
+		}
+		for k := range props(o) {
+			if _, ok := props(c)[k]; !ok {
+				t.Errorf("%s: proprietà %s sparita", rel, k)
+			}
+		}
+		if rel == "http/error.json" {
+			continue
+		}
+		if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+			t.Errorf("%s: 0.4.0 cambia un file che doveva restare uguale alla 0.3.0", rel)
+		}
+	}
+	oldCodes, curCodes := codes(old), codes(cur)
+	for c := range oldCodes {
+		if !curCodes[c] {
+			t.Errorf("codice %s sparito in 0.4.0", c)
+		}
+	}
+	if !curCodes["BILLING_REQUIRED"] {
+		t.Error("http/error.json 0.4.0 senza BILLING_REQUIRED")
+	}
+	if oldCodes["BILLING_REQUIRED"] {
+		t.Error("BILLING_REQUIRED non deve esistere in 0.3.0: i connettori 0.3.0 ricevono HOST_DISABLED")
+	}
+	if len(curCodes) != len(oldCodes)+1 {
+		t.Errorf("0.4.0 aggiunge %d codici, atteso 1", len(curCodes)-len(oldCodes))
+	}
+}
+
+// mustJSON serializza un documento senza $id, per confrontare due versioni dello stesso file.
+func mustJSON(t *testing.T, doc map[string]any) []byte {
+	t.Helper()
+	cp := map[string]any{}
+	for k, v := range doc {
+		if k != "$id" {
+			cp[k] = v
+		}
+	}
+	b, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.4.0/messages/connector-to-backend/event.json",
+  "title": "event",
+  "description": "Evento da consegnare; il data segue lo schema del suo kind in events/ (§1.8)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "event"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "$ref": "../../common.json#/$defs/seq"
+        },
+        "kind": {
+          "enum": [
+            "agent.state",
+            "session.started",
+            "session.ended",
+            "agent.detected",
+            "catalog.installed",
+            "connector.restarted",
+            "journal.truncated"
+          ]
+        },
+        "at": {
+          "$ref": "../../common.json#/$defs/timestamp"
+        },
+        "data": {
+          "type": "object",
+          "description": "schema in events/<kind>.json; al massimo 4 KiB serializzato"
+        }
+      },
+      "required": [
+        "seq",
+        "kind",
+        "at",
+        "data"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

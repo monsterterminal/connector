@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/monsterterminal/connector/internal/fakeserver"
+	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/register"
 )
 
@@ -229,12 +230,55 @@ func TestMacchinaFermataRifiutataAllaRegistrazione(t *testing.T) {
 }
 
 func TestOgniCodiceNotoHaUnaSpiegazione(t *testing.T) {
-	for _, code := range []string{"INSTALL_TOKEN_INVALID", "BODY_INVALID", "SERVER_LIMIT", "HOST_DISABLED", "CONNECTOR_TOO_OLD", "RATE_LIMITED", "UNAVAILABLE"} {
+	for _, code := range []string{"INSTALL_TOKEN_INVALID", "BODY_INVALID", "SERVER_LIMIT", "HOST_DISABLED", "BILLING_REQUIRED", "CONNECTOR_TOO_OLD", "RATE_LIMITED", "UNAVAILABLE"} {
 		if (&register.APIError{Code: code}).Hint() == "" {
 			t.Errorf("%s senza spiegazione", code)
 		}
 	}
 	if (&register.APIError{Code: "SCONOSCIUTO"}).Hint() != "" {
 		t.Error("un codice sconosciuto non deve inventare spiegazioni")
+	}
+}
+
+// Barriera del billing (ADR 0418 D5, spec §3.13): 402 BILLING_REQUIRED alla registrazione, token
+// non consumato, messaggio che manda l'owner alla pagina del billing e non parla di kill-switch.
+func TestAbbonamentoMancanteRifiutatoAllaRegistrazione(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	s.RequireBilling()
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	_, err := c.Register(context.Background(), installTok, info())
+	var api *register.APIError
+	if !errors.As(err, &api) || api.Status != 402 || api.Code != "BILLING_REQUIRED" {
+		t.Fatalf("atteso 402 BILLING_REQUIRED, trovato %v", err)
+	}
+	if !s.InstallTokenUsable(installTok) {
+		t.Fatal("il token non doveva essere consumato")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "abbonamento") || !strings.Contains(msg, "/admin/billing") || strings.Contains(msg, "kill-switch") {
+		t.Fatalf("messaggio sbagliato: %v", err)
+	}
+	// Tolta la barriera (il tenant paga), lo stesso token registra.
+	s.AllowBilling()
+	if _, err := c.Register(context.Background(), installTok, info()); err != nil {
+		t.Fatalf("dopo il pagamento la registrazione doveva riuscire: %v", err)
+	}
+}
+
+// La registrazione dichiara la versione degli schemi (§1.15): è l'header da cui il backend decide
+// fra BILLING_REQUIRED e HOST_DISABLED.
+func TestLaRegistrazioneDichiaraLaVersioneDegliSchemi(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	s.AddInstallToken(installTok, time.Hour)
+	c := register.Client{BaseURL: s.BaseURL(), HTTPClient: s.Client()}
+	if _, err := c.Register(context.Background(), installTok, info()); err != nil {
+		t.Fatal(err)
+	}
+	got := s.DeclaredSchemas()
+	if len(got) != 1 || got[0] != protocol.SchemaVersion || protocol.SchemaVersion != "0.4.0" {
+		t.Fatalf("X-MonsterTerminal-Schema dichiarati: %v, atteso [0.4.0]", got)
 	}
 }

@@ -287,3 +287,41 @@ func TestURLNonCifratoRifiutato(t *testing.T) {
 		t.Fatal("ws:// accettato")
 	}
 }
+
+// Barriera del billing (ADR 0418 D5, §3.13): la chiusura 4402 e il rifiuto 402 BILLING_REQUIRED
+// all'upgrade si trattano come un kill-switch (attesa minima di 15 minuti, nessuna uscita) e, tolta
+// la barriera, il connettore si riaggancia da solo. Ogni upgrade dichiara X-MonsterTerminal-Schema.
+func TestAbbonamentoMancanteAttendeERiaggancia(t *testing.T) {
+	s := fakeserver.New()
+	defer s.Close()
+	_, tok := s.AddHost()
+	r := start(t, s, tok, nil)
+	waitHello(t, s)
+	waitWelcome(t, r)
+	s.RequireBilling()
+	deadline := time.After(5 * time.Second)
+	for len(r.sl.all()) < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("attese registrate: %v", r.sl.all())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	for i, d := range r.sl.all()[:2] {
+		if d < transport.DisabledMinWait {
+			t.Fatalf("attesa %d senza abbonamento: %v, minimo 15 minuti", i, d)
+		}
+	}
+	select {
+	case err := <-r.done:
+		t.Fatalf("il connettore si è fermato per il billing: %v", err)
+	default:
+	}
+	s.AllowBilling()
+	waitWelcome(t, r)
+	for i, v := range s.DeclaredSchemas() {
+		if v != "0.4.0" {
+			t.Fatalf("upgrade %d senza X-MonsterTerminal-Schema 0.4.0: %q", i, v)
+		}
+	}
+}
