@@ -36,10 +36,6 @@ import (
 // HeaderCurrentHostToken è l'header con cui il connettore prova il possesso dell'host da sostituire.
 const HeaderCurrentHostToken = "X-MonsterTerminal-Host-Token"
 
-// HeaderSchema è l'header con cui il connettore dichiara la versione degli schemi che parla (dalla
-// 0.4.0, ADR 0418 D5): il server finto lo registra per ogni registrazione e non lo giudica.
-const HeaderSchema = "X-MonsterTerminal-Schema"
-
 // RateLimit è il limite di messaggi al secondo per host del backend (§1.17).
 const RateLimit = 50
 
@@ -103,7 +99,6 @@ type Server struct {
 	schemas         []string // X-MonsterTerminal-Schema di ogni register e upgrade, in ordine
 	registrations   []register.Info
 	replaceHeaders  []string
-	schemaHeaders   []string
 	hellos          chan protocol.Hello
 	connects        int
 	upgrades        int
@@ -207,13 +202,6 @@ func (s *Server) ReplaceHeaders() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.replaceHeaders...)
-}
-
-// SchemaHeaders restituisce l'header X-MonsterTerminal-Schema di ogni registrazione ("" se assente).
-func (s *Server) SchemaHeaders() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.schemaHeaders...)
 }
 
 // Hellos riceve ogni hello valido. Il canale ha 64 posti: chi tiene il server a lungo lo svuota.
@@ -485,7 +473,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	s.registrations = append(s.registrations, info)
 	s.replaceHeaders = append(s.replaceHeaders, current)
-	s.schemaHeaders = append(s.schemaHeaders, r.Header.Get(HeaderSchema))
 	// Sostituzione (§1.3): solo col token attuale di un host vivo della stessa macchina. Senza
 	// prova, o con una prova che non torna, l'host nuovo nasce accanto al vecchio.
 	var replaced *host

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/monsterterminal/connector/internal/fakeserver"
+	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/register"
 )
 
@@ -77,7 +78,8 @@ func TestStatusFileRiscrittoAOgniRegistrazione(t *testing.T) {
 	}
 	if len(st.Registrations) != 1 || st.Registrations[0].Hostname != "cliente-banco" ||
 		st.Registrations[0].Arch != "amd64" || st.Registrations[0].ConnectorVersion != "0.0.0-banco" ||
-		st.Registrations[0].Replace || st.Hellos != 0 || st.UpdatedAt == "" {
+		st.Registrations[0].Replace || st.Hellos != 0 || st.UpdatedAt == "" ||
+		len(st.DeclaredSchemas) != 1 || st.DeclaredSchemas[0] != protocol.SchemaVersion {
 		t.Fatalf("status-file inatteso: %+v", st)
 	}
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {

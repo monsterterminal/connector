@@ -302,6 +302,7 @@ wait_status() {
 	return 1
 }
 status_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d[sys.argv[2]]; print(len(v) if isinstance(v,list) else v)' "$STATUS/status.json" "$1" 2>/dev/null; }
+status_list() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join(d[sys.argv[2]]) or "(nessuno)")' "$STATUS/status.json" "$1" 2>/dev/null; }
 status_reg() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["registrations"][int(sys.argv[2])][sys.argv[3]])' "$STATUS/status.json" "$1" "$2" 2>/dev/null; }
 
 cmd_install() {
@@ -339,7 +340,7 @@ cmd_install() {
 	assert "registrazione: hostname=$HOSTNAME_C arch=$ARCH versione=$BANCO_VERSION utente=monsterterminal non root, senza sostituzione" \
 		test "$(status_reg 0 hostname)|$(status_reg 0 arch)|$(status_reg 0 connectorVersion)|$(status_reg 0 runAsUser)|$(status_reg 0 runAsRoot)|$(status_reg 0 replace)" \
 		= "$HOSTNAME_C|$ARCH|$BANCO_VERSION|monsterterminal|False|False"
-	msg "   header X-MonsterTerminal-Schema alla registrazione: «$(status_reg 0 schemaHeader)» (informativo)"
+	msg "   X-MonsterTerminal-Schema dichiarati (register e upgrade, informativo): $(status_list declaredSchemas)"
 	assert "status-file: ≥1 upgrade entro 30 s" wait_status upgrades 1 30
 	assert "status-file: ≥1 hello entro 30 s" wait_status hellos 1 30
 	assert "status-file: ≥1 collegamento autenticato" wait_status connects 1 5

@@ -70,9 +70,9 @@ lavoro vero, senza `--insecure-skip-signature`. `SHA256SUMS` è firmata con `ope
 `releases.banco` raggiungibile in https con la CA del banco (`curl --proto '=https' --tlsv1.2`),
 `connect.banco:8443` che risponde, token-file `0600` con tre token `mti_`, status-file iniziale vuoto.
 
-L'header `X-MonsterTerminal-Schema` (schemi 0.4.0, ADR 0418 D5) è **registrato** dal backend finto
-(`schemaHeader` nello status-file) e stampato come informativo: il connettore su `main` (schemi 0.3.0)
-non lo manda ancora, e il banco non lo giudica.
+L'header `X-MonsterTerminal-Schema` (ADR 0418 D5) dichiarato a ogni `register` e upgrade finisce
+nello status-file (`declaredSchemas`, da `Server.DeclaredSchemas`) e viene stampato come informativo:
+il banco non lo giudica.
 
 ## Cosa NON prova
 

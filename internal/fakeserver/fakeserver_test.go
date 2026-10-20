@@ -1,6 +1,6 @@
 // Test del server finto montato su un listener proprio (Handler e Serve), come lo usa il banco di
 // prova con systemd (packaging/banco). Corrispondenza (regola #26): spec §1.3 (registrazione col
-// token monouso, 401 INSTALL_TOKEN_INVALID), ADR 0418 D5 (header X-MonsterTerminal-Schema registrato).
+// token monouso, 401 INSTALL_TOKEN_INVALID), ADR 0418 D5 (header X-MonsterTerminal-Schema dichiarato).
 package fakeserver_test
 
 import (
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/monsterterminal/connector/internal/fakeserver"
+	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/register"
 )
 
@@ -70,7 +71,7 @@ func TestHandlerRegistraLHeaderDelloSchema(t *testing.T) {
 		strings.NewReader(`{"machineId":"0123456789abcdef0123456789abcdef","hostname":"h","os":"linux","distro":"ubuntu","distroVersion":"24.04","arch":"amd64","connectorVersion":"0.4.0","runAsUser":"monsterterminal","runAsRoot":false}`))
 	req.Header.Set("Authorization", "Bearer "+installTok)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(fakeserver.HeaderSchema, "0.4.0")
+	req.Header.Set(protocol.HeaderSchema, "0.4.0")
 	res, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -79,8 +80,8 @@ func TestHandlerRegistraLHeaderDelloSchema(t *testing.T) {
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("stato %d", res.StatusCode)
 	}
-	if got := s.SchemaHeaders(); len(got) != 1 || got[0] != "0.4.0" {
-		t.Fatalf("header dello schema registrati: %v", got)
+	if got := s.DeclaredSchemas(); len(got) != 1 || got[0] != "0.4.0" {
+		t.Fatalf("schemi dichiarati: %v", got)
 	}
 }
 
@@ -127,7 +128,7 @@ func TestNewRestaCompatibile(t *testing.T) {
 	if _, err := c.Register(context.Background(), installTok, info()); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.SchemaHeaders(); len(got) != 1 || got[0] != "" {
-		t.Fatalf("senza header lo schema registrato è vuoto, trovato %v", got)
+	if got := s.DeclaredSchemas(); len(got) != 1 || got[0] != protocol.SchemaVersion {
+		t.Fatalf("register.Client dichiara gli schemi %s, trovato %v", protocol.SchemaVersion, got)
 	}
 }

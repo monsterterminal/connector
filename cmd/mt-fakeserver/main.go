@@ -36,8 +36,8 @@ import (
 	"github.com/monsterterminal/connector/internal/register"
 )
 
-// registration è una riga dello status-file: la registrazione come l'ha vista il server, più
-// l'header dello schema e se il connettore ha chiesto la sostituzione di un host.
+// registration è una riga dello status-file: la registrazione come l'ha vista il server, più se il
+// connettore ha chiesto la sostituzione di un host.
 type registration struct {
 	Hostname         string `json:"hostname"`
 	Distro           string `json:"distro"`
@@ -46,19 +46,21 @@ type registration struct {
 	ConnectorVersion string `json:"connectorVersion"`
 	RunAsUser        string `json:"runAsUser"`
 	RunAsRoot        bool   `json:"runAsRoot"`
-	SchemaHeader     string `json:"schemaHeader"`
 	Replace          bool   `json:"replace"`
 }
 
 // status è lo status-file: cresce solo, viene riscritto per intero a ogni evento.
 type status struct {
-	UpdatedAt     string          `json:"updatedAt"`
-	TokensMinted  int             `json:"tokensMinted"`
-	Registrations []registration  `json:"registrations"`
-	Upgrades      int             `json:"upgrades"`
-	Connects      int             `json:"connects"`
-	Hellos        int             `json:"hellos"`
-	LastHello     *protocol.Hello `json:"lastHello,omitempty"`
+	UpdatedAt     string         `json:"updatedAt"`
+	TokensMinted  int            `json:"tokensMinted"`
+	Registrations []registration `json:"registrations"`
+	// DeclaredSchemas è l'header X-MonsterTerminal-Schema di ogni register e upgrade, in ordine
+	// (ADR 0418 D5): informativo, il banco non lo giudica.
+	DeclaredSchemas []string        `json:"declaredSchemas"`
+	Upgrades        int             `json:"upgrades"`
+	Connects        int             `json:"connects"`
+	Hellos          int             `json:"hellos"`
+	LastHello       *protocol.Hello `json:"lastHello,omitempty"`
 }
 
 func main() {
@@ -212,17 +214,17 @@ func (w *statusWriter) write() error {
 	defer w.mu.Unlock()
 	regs := w.s.Registrations()
 	replaces := w.s.ReplaceHeaders()
-	schemas := w.s.SchemaHeaders()
 	w.st.Registrations = make([]registration, 0, len(regs))
 	for i, r := range regs {
-		schema, replace := "", ""
-		if i < len(schemas) {
-			schema = schemas[i]
-		}
+		replace := ""
 		if i < len(replaces) {
 			replace = replaces[i]
 		}
-		w.st.Registrations = append(w.st.Registrations, toRegistration(r, schema, replace))
+		w.st.Registrations = append(w.st.Registrations, toRegistration(r, replace))
+	}
+	w.st.DeclaredSchemas = w.s.DeclaredSchemas()
+	if w.st.DeclaredSchemas == nil {
+		w.st.DeclaredSchemas = []string{}
 	}
 	w.st.Upgrades = w.s.Upgrades()
 	w.st.Connects = w.s.Connects()
@@ -243,10 +245,9 @@ func (w *statusWriter) write() error {
 
 // toRegistration proietta il corpo di registrazione (register.Info, il contratto col backend)
 // nella riga dello status-file; replace è l'header del token attuale, vuoto se non c'era.
-func toRegistration(r register.Info, schema, replace string) registration {
+func toRegistration(r register.Info, replace string) registration {
 	return registration{Hostname: r.Hostname, Distro: r.Distro, DistroVersion: r.DistroVersion, Arch: r.Arch,
-		ConnectorVersion: r.ConnectorVersion, RunAsUser: r.RunAsUser, RunAsRoot: r.RunAsRoot,
-		SchemaHeader: schema, Replace: replace != ""}
+		ConnectorVersion: r.ConnectorVersion, RunAsUser: r.RunAsUser, RunAsRoot: r.RunAsRoot, Replace: replace != ""}
 }
 
 // loadOrMakeCert carica la coppia PEM o, senza file, genera un certificato autofirmato in memoria
