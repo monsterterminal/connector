@@ -436,6 +436,11 @@ uninstall() {
 	else
 		msg "Stato e token restano in $MT_STATE (--purge per rimuoverli)"
 	fi
+	# L'utente non si tocca: lo script non sa se l'ha creato lui o era del cliente (--user), e con
+	# lui andrebbe via la home con le sessioni tmux. Chi lo vuole via lo fa a mano.
+	if [ "$MT_USER" != root ] && getent passwd "$MT_USER" >/dev/null 2>&1; then
+		msg "L'utente $MT_USER resta (con la sua home): se l'aveva creato questo script, userdel -r $MT_USER"
+	fi
 }
 
 main() {
@@ -448,8 +453,10 @@ main() {
 	check_tools
 	read_token
 	confirm_root
-	ensure_user
+	# Prima il rilascio verificato, poi l'utente: con una firma non valida non deve restare nulla
+	# sulla macchina, nemmeno un utente (rilievo del banco 2, 20/10).
 	download_release
+	ensure_user
 	install_files
 	register_host
 	install_service

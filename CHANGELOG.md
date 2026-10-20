@@ -56,6 +56,10 @@
   dichiarava sempre `false`. File assente = default accesi; file malformato = il servizio non parte.
 - `install.sh --releases-url URL` (solo https): base da cui scaricare il rilascio al posto di GitHub,
   per i banchi di prova; la firma resta verificata con la chiave scritta nello script.
+- Banco 2 (`packaging/banco`, mt3): install.sh end-to-end in un container systemd con rilascio locale
+  firmato e backend finto (`cmd/mt-fakeserver`). Rilievi recepiti: il rilascio si scarica e si
+  verifica prima di creare l'utente; `--uninstall` dice che l'utente resta e come toglierlo; il 401
+  alla registrazione è documentato nel README.
 
 ## Schemi 0.4.0 — 2026-10-18
 

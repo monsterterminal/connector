@@ -116,6 +116,9 @@ check "chiave diversa dall'impronta dichiarata ⇒ lo script si ferma" '! (check
 MT_UPDATES_PUBKEY_PEM=""
 check "senza chiave pubblica lo script si ferma" '! (check_tools) 2>/dev/null'
 
+# --- ordine dei passi: il rilascio si scarica e si verifica PRIMA di creare l'utente (banco 2) ---
+check "main: download_release precede ensure_user" '[ "$(grep -n "^	download_release$" "$here/install.sh" | cut -d: -f1)" -lt "$(grep -n "^	ensure_user$" "$here/install.sh" | cut -d: -f1)" ]'
+
 # --- --dry-run: nessun effetto, e il token non compare mai nell'uscita ---
 # Lo script sorgente porta la chiave vera; `|| true` perché un die nel sottoshell deve far fallire le
 # prove qui sotto a voce alta, non uscire dalla suite in silenzio (set -e).
