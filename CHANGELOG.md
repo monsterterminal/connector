@@ -11,6 +11,9 @@
   aggiornamenti e `install.sh`; `scripts/firma-rilascio.sh` ricompila, confronta, firma e pubblica dal PC
   di chi custodisce la chiave. La chiave pubblica nello script e nel binario arriva col primo rilascio
   firmato; fino ad allora `install.sh` rifiuta di installare.
+- `run -config FILE` (default `/etc/monsterterminal/connector.conf`): legge le impostazioni decise dal
+  cliente sull'host (`auto_update`, `catalog_install`) e le riporta in `hello` (§1.11), che prima
+  dichiarava sempre `false`. File assente = default accesi; file malformato = il servizio non parte.
 
 ## Schemi 0.4.0 — 2026-10-18
 

@@ -152,6 +152,13 @@ il servizio `systemd` `monsterterminal-connector`. Il token dell'host finisce in
 `/etc/monsterterminal/connector.conf` (`auto_update`, `catalog_install`: ADR 0409 D6, D7). Opzioni:
 `sh install.sh --help`; `--uninstall` rimuove tutto (l'host va poi revocato dalla UI).
 
+`connector.conf` è una riga `chiave=valore` per impostazione (`auto_update`, `catalog_install` con
+`yes`/`no`; `user`, `server`, `installed_version` informative), commenti con `#`. `run` lo legge
+all'avvio (`-config FILE`, default quel percorso) e riporta le due scelte in `hello` (§1.11): il
+backend le vede, non le può cambiare. Senza file valgono i default (tutto acceso); con una chiave
+sconosciuta o un valore non interpretabile il servizio **non parte** e il log dice riga e chiave.
+Cambiata un'impostazione, `systemctl restart monsterterminal-connector`.
+
 Lo script si ferma senza installare nulla se la firma del rilascio non è valida o se non porta la
 chiave pubblica: la verifica non è opzionale. `--insecure-skip-signature` esiste solo per istanze di
 prova e lo dichiara a voce alta.
