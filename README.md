@@ -175,7 +175,11 @@ indicato con `--user`, oppure `root` dopo conferma esplicita: ADR 0409 D5), regi
 il servizio `systemd` `monsterterminal-connector`. Il token dell'host finisce in
 `/var/lib/monsterterminal/host-token` (`0600`); le impostazioni decise dal cliente stanno in
 `/etc/monsterterminal/connector.conf` (`auto_update`, `catalog_install`: ADR 0409 D6, D7). Opzioni:
-`sh install.sh --help`; `--uninstall` rimuove tutto (l'host va poi revocato dalla UI).
+`sh install.sh --help`; `--uninstall` rimuove servizio, binario e configurazione, `--purge` anche
+stato e token (l'host va poi revocato dalla UI); l'utente resta, con la sua home: `userdel -r
+monsterterminal` a mano se l'aveva creato lo script. Se la registrazione fallisce (token scaduto,
+revocato o già usato: 401) il servizio non viene installato e restano binario e configurazione:
+basta rilanciare il comando con un token nuovo. Con una firma non valida non resta nulla.
 
 `connector.conf` è una riga `chiave=valore` per impostazione (`auto_update`, `catalog_install` con
 `yes`/`no`; `user`, `server`, `installed_version` informative), commenti con `#`. `run` lo legge
