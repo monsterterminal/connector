@@ -18,6 +18,8 @@
 - `run -config FILE` (default `/etc/monsterterminal/connector.conf`): legge le impostazioni decise dal
   cliente sull'host (`auto_update`, `catalog_install`) e le riporta in `hello` (§1.11), che prima
   dichiarava sempre `false`. File assente = default accesi; file malformato = il servizio non parte.
+- `install.sh --releases-url URL` (solo https): base da cui scaricare il rilascio al posto di GitHub,
+  per i banchi di prova; la firma resta verificata con la chiave scritta nello script.
 
 ## Schemi 0.3.0 — 2026-10-17
 

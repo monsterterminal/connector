@@ -44,6 +44,11 @@ check "--no-catalog (D7)" '[ "$MT_CATALOG" = no ]'
 check "--replace" '[ "$MT_REPLACE" = yes ]'
 check "--server" '[ "$MT_SERVER" = https://prova.example ]'
 check "--server http rifiutato" '! (parse_args --server http://prova.example) 2>/dev/null'
+check "senza --releases-url resta GitHub" '[ "$MT_RELEASES" = https://github.com/monsterterminal/connector/releases/download ]'
+parse_args --releases-url https://banco.example/rilasci/
+check "--releases-url, senza la barra finale" '[ "$MT_RELEASES" = https://banco.example/rilasci ]'
+check "--releases-url http rifiutato" '! (parse_args --releases-url http://banco.example) 2>/dev/null'
+MT_RELEASES=$MT_DEFAULT_RELEASES
 check "utente con caratteri estranei rifiutato" '! (parse_args --user "ma rio") 2>/dev/null'
 check "opzione sconosciuta ⇒ uscita 2" '(parse_args --boh) 2>/dev/null; [ $? = 2 ]'
 MT_VERSION="@VERSION@"
