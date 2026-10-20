@@ -1,5 +1,41 @@
 # Changelog
 
+## Schemi 0.5.0 — 2026-10-19
+
+- Solo aggiunte rispetto a 0.4.0 (protocollo sempre 1), ADR 0410 A2, spec §2.14: `questions`
+  opzionale in `request.context` (al più 4 domande da 200 caratteri, intestazione facoltativa, al più
+  10 opzioni con etichetta da 200 e descrizione da 500, `multiSelect`); `answers` opzionale in
+  `request.respond` (una risposta per domanda, `question` e `text` ≤ 2000, solo con `testo`); il
+  messaggio nuovo `request.closed` connettore → backend (`requestId`, `reason` ∈ `annullata`).
+
+## Fetta 3b — 2026-10-19 (non rilasciato)
+
+- Le domande dell'agente dalla card (spec §2.14, §1.21; ADR 0410 A2). Claude Code fa le domande con
+  lo strumento `AskUserQuestion` ed emette per quello lo stesso `PermissionRequest` dei permessi:
+  l'adattatore lo riconosce e apre una richiesta `kind: domanda` con `action: AskUserQuestion`,
+  `detail` = la prima domanda (più «(+N domande)»), le `questions` nei tetti dello schema 0.5.0
+  (testi e opzioni oltre i tetti troncati con avviso nei log; nessuna domanda, più di quattro, una
+  domanda senza testo o senza opzioni → `questions` assente, la card resta al testo libero), la stessa
+  finestra adattiva e lo stesso `deadline`; nel giornale `attende-input`/`domanda` col `requestId`
+  (riga nuova della tabella di §1.21). La `Notification permission_prompt` che segue di 6 s non chiude
+  la domanda.
+- La risposta: `request.respond` con `testo` e `answers` diventa `decision: {behavior: allow,
+  updatedInput: tool_input + answers}` nel formato di Claude Code (`{"<domanda>": "<risposta>"}`, la
+  chiave è il testo originale della domanda, le risposte si abbinano per posizione), esito
+  `consegnata`. `testo` senza `answers` risponde alla sola domanda che c'è; con più domande, con
+  `questions` assenti, con un numero di risposte diverso dalle domande, e con `approva`/`nega` l'esito è
+  `non-supportata` e la richiesta resta aperta. Per i permessi tutto invariato.
+- Annullata nel terminale: l'Esc sul prompt fa terminare l'hook (SIGTERM); l'hook esce subito
+  chiudendo la connessione, e il connettore, che vede la connessione chiusa prima di una decisione e
+  prima della fine della finestra, chiude la richiesta e manda `request.closed` `{requestId, reason:
+  annullata}`. Vale anche per un permesso. Le chiusure del connettore stesso (decisione, finestra
+  scaduta, cambio di stato, richiesta nuova sulla stessa sessione) non producono `request.closed`.
+  Prima di questa fetta il comando `hook` ignorava il SIGTERM e restava in attesa.
+- Il tetto della riga sul socket degli hook sale a 64 KiB per le domande nei tetti dello schema.
+- `hooks install` non cambia: `PermissionRequest` senza matcher, timeout 3660 s (verificato).
+- Mai il testo delle domande o delle risposte nei log e nel giornale: solo `requestId`, sessione e
+  numero di domande (§1.8, §2.12).
+
 ## Connettore — 2026-10-19 (non rilasciato)
 
 - Repository pubblico `github.com/monsterterminal/connector` (Apache 2.0): module path rinominato,
@@ -21,6 +57,15 @@
 - `install.sh --releases-url URL` (solo https): base da cui scaricare il rilascio al posto di GitHub,
   per i banchi di prova; la firma resta verificata con la chiave scritta nello script.
 
+## Schemi 0.4.0 — 2026-10-18
+
+- Solo aggiunte rispetto a 0.3.0 (protocollo sempre 1): `BILLING_REQUIRED` in `http/error.json`
+  (ADR 0418 D5, spec §3.13): HTTP 402 alla registrazione e al rifiuto dell'upgrade, chiusura `4402`,
+  per lo spazio di lavoro senza abbonamento attivo. `HOST_DISABLED` resta al solo kill-switch.
+- Header `X-MonsterTerminal-Schema` su `POST /v1/register` e sull'upgrade (§1.15): il backend decide
+  da lì, chiamata per chiamata, se la barriera del billing si presenta come `BILLING_REQUIRED`
+  (da 0.4.0) o come `HOST_DISABLED` (connettori fino a 0.3.0).
+
 ## Schemi 0.3.0 — 2026-10-17
 
 - Solo aggiunte rispetto a 0.2.0 (protocollo sempre 1): `deadline` opzionale in `request.context`
@@ -40,7 +85,13 @@
 - `hooks install` scrive anche `PermissionRequest` (timeout 3660 s) e `PostToolUse`.
 - `run` prende un lock sulla cartella di stato: un secondo connettore sulla stessa cartella si ferma
   subito con un messaggio (TD-MT-CONNECTOR-SOCKET-LOCK).
-- Schemi 0.3.0 nel codice (`protocol.SchemaVersion`).
+- Schemi 0.4.0 nel codice (`protocol.SchemaVersion`), dichiarati con l'header
+  `X-MonsterTerminal-Schema` a ogni registrazione e upgrade.
+- `BILLING_REQUIRED` (ADR 0418 D5): alla registrazione il messaggio manda l'owner a `/admin/billing`
+  e il token di installazione resta valido; a `run` il rifiuto 402 e la chiusura 4402 si trattano
+  come un kill-switch (nuovo tentativo ogni 15 minuti, nessuna uscita), così quando il tenant attiva
+  l'abbonamento il connettore si riaggancia da solo. Il testo di `HOST_DISABLED` torna a parlare del
+  solo kill-switch.
 
 ## Schemi 0.2.0 — 2026-10-16
 

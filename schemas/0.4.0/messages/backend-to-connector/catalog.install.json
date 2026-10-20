@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.4.0/messages/backend-to-connector/catalog.install.json",
+  "title": "catalog.install",
+  "description": "Installazione confermata in UI da owner o admin (§1.9)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "catalog.install"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "installId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "recipe": {
+          "$ref": "../../objects/recipe.json"
+        },
+        "signature": {
+          "$ref": "../../common.json#/$defs/signature"
+        },
+        "approvedBy": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "approvedAt": {
+          "$ref": "../../common.json#/$defs/timestamp"
+        }
+      },
+      "required": [
+        "installId",
+        "recipe",
+        "signature",
+        "approvedBy",
+        "approvedAt"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

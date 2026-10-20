@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.4.0/messages/connector-to-backend/catalog.install.result.json",
+  "title": "catalog.install.result",
+  "description": "Esito di un'installazione dal catalogo (§1.9)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "catalog.install.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "installId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "outcome": {
+          "enum": [
+            "ok",
+            "failed",
+            "refused"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "per refused: disabled-on-host, signature-invalid, platform-mismatch"
+        },
+        "logTail": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      },
+      "required": [
+        "installId",
+        "outcome"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

@@ -48,16 +48,18 @@ type host struct {
 	machineID string
 	revoked   bool
 	disabled  bool
+	schema    string // X-MonsterTerminal-Schema dichiarato all'ultimo upgrade
 	conn      *websocket.Conn
 	bookmark  int64
 	events    []protocol.Event
 	hits      []time.Time
 	// terminale (§1.7)
-	output   map[uint32][]byte
-	frames   []int // dimensione di ogni frame di output ricevuto
-	replies  map[string]protocol.Envelope
-	closed   []protocol.SessionClosed
-	contexts []protocol.RequestContext
+	output    map[uint32][]byte
+	frames    []int // dimensione di ogni frame di output ricevuto
+	replies   map[string]protocol.Envelope
+	closed    []protocol.SessionClosed
+	contexts  []protocol.RequestContext
+	reqClosed []protocol.RequestClosed
 }
 
 // Rejection è un rifiuto dell'upgrade preparato da un test.
@@ -97,6 +99,8 @@ type Server struct {
 	installTokens   map[string]time.Time // token -> scadenza
 	hosts           map[string]*host     // sha256(token dell'host) -> host
 	disabledMachine map[string]bool
+	billingRequired bool
+	schemas         []string // X-MonsterTerminal-Schema di ogni register e upgrade, in ordine
 	registrations   []register.Info
 	replaceHeaders  []string
 	schemaHeaders   []string
@@ -352,6 +356,72 @@ func (s *Server) Disable(hostID string) {
 	s.closeWith(hostID, 4403, func(h *host) { h.disabled = true })
 }
 
+// RequireBilling mette lo spazio di lavoro senza abbonamento attivo (ADR 0418 D5, §3.13): gli host
+// collegati si chiudono con 4402 (o 4403 se all'upgrade avevano dichiarato schemi sotto 0.4.0) e
+// registrazioni e upgrade successivi si rifiutano con 402 BILLING_REQUIRED (o 403 HOST_DISABLED per
+// i connettori vecchi). AllowBilling toglie la barriera, come un tenant che paga.
+func (s *Server) RequireBilling() {
+	s.mu.Lock()
+	s.billingRequired = true
+	type victim struct {
+		conn *websocket.Conn
+		code websocket.StatusCode
+	}
+	var victims []victim
+	for _, h := range s.hosts {
+		if h.conn == nil {
+			continue
+		}
+		code := websocket.StatusCode(4403)
+		if schemaAtLeast040(h.schema) {
+			code = 4402
+		}
+		victims = append(victims, victim{h.conn, code})
+	}
+	s.mu.Unlock()
+	for _, v := range victims {
+		_ = v.conn.Close(v.code, "")
+	}
+}
+
+// AllowBilling toglie la barriera del billing: il prossimo tentativo del connettore riesce.
+func (s *Server) AllowBilling() { s.mu.Lock(); s.billingRequired = false; s.mu.Unlock() }
+
+// DeclaredSchemas è l'header X-MonsterTerminal-Schema di ogni register e upgrade ricevuti, in
+// ordine; stringa vuota = header assente.
+func (s *Server) DeclaredSchemas() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.schemas...)
+}
+
+// rejectForBilling è la regola del backend (ADR 0418 D5): decide l'header della chiamata corrente.
+func rejectForBilling(w http.ResponseWriter, r *http.Request) {
+	if schemaAtLeast040(r.Header.Get(protocol.HeaderSchema)) {
+		writeJSON(w, http.StatusPaymentRequired, map[string]string{"code": "BILLING_REQUIRED"})
+		return
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"code": "HOST_DISABLED"})
+}
+
+// schemaAtLeast040 confronta la sola parte numerica di una versione degli schemi con 0.4.0;
+// vuoto o illeggibile = vecchio.
+func schemaAtLeast040(v string) bool {
+	parts := strings.SplitN(strings.SplitN(v, "-", 2)[0], ".", 3)
+	if len(parts) != 3 {
+		return false
+	}
+	var n [3]int
+	for i, p := range parts {
+		x, err := strconv.Atoi(p)
+		if err != nil || x < 0 {
+			return false
+		}
+		n[i] = x
+	}
+	return n[0] > 0 || n[1] >= 4
+}
+
 // Silence smette di mandare ping e messaggi: simula un backend muto.
 func (s *Server) Silence() { s.mu.Lock(); s.silent = true; s.mu.Unlock() }
 
@@ -377,6 +447,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.mu.Lock()
+	s.schemas = append(s.schemas, r.Header.Get(protocol.HeaderSchema))
+	s.mu.Unlock()
 	// Il token prima del corpo, e NON si consuma finché la registrazione non riesce.
 	if !s.InstallTokenUsable(tok) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "INSTALL_TOKEN_INVALID"})
@@ -398,6 +471,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if s.disabledMachine[info.MachineID] {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "HOST_DISABLED"})
+		return
+	}
+	if s.billingRequired {
+		s.mu.Unlock()
+		rejectForBilling(w, r)
 		return
 	}
 	if !s.consumeLocked(tok) {
@@ -449,6 +527,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.notify("upgrade")
 	s.mu.Lock()
 	s.upgrades++
+	s.schemas = append(s.schemas, r.Header.Get(protocol.HeaderSchema))
 	if len(s.rejections) > 0 {
 		rej := s.rejections[0]
 		s.rejections = s.rejections[1:]
@@ -473,7 +552,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusForbidden, map[string]string{"code": "HOST_DISABLED"})
 		return
+	case s.billingRequired:
+		s.mu.Unlock()
+		rejectForBilling(w, r)
+		return
 	}
+	h.schema = r.Header.Get(protocol.HeaderSchema)
 	s.mu.Unlock()
 
 	conn, err := websocket.Accept(w, r, nil)
@@ -612,6 +696,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					h.contexts = append(h.contexts, c)
 				}
 			}
+			if env.Type == protocol.TypeRequestClosed {
+				var c protocol.RequestClosed
+				if json.Unmarshal(env.Body, &c) == nil {
+					h.reqClosed = append(h.reqClosed, c)
+				}
+			}
 			s.mu.Unlock()
 			continue
 		}
@@ -690,6 +780,16 @@ func (s *Server) Contexts(hostID string) []protocol.RequestContext {
 	defer s.mu.Unlock()
 	if h := s.byID(hostID); h != nil {
 		return append([]protocol.RequestContext(nil), h.contexts...)
+	}
+	return nil
+}
+
+// RequestsClosed sono i request.closed ricevuti dall'host (§2.14), nell'ordine di arrivo.
+func (s *Server) RequestsClosed(hostID string) []protocol.RequestClosed {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]protocol.RequestClosed(nil), h.reqClosed...)
 	}
 	return nil
 }

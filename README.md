@@ -37,8 +37,13 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Comportamento verso il gateway
 
-- **Registrazione** (§1.3): un rifiuto `400 BODY_INVALID` o `403 HOST_DISABLED` (macchina fermata dal
-  kill-switch) non consuma il token di installazione; il messaggio d'errore dice cosa fare.
+- **Registrazione** (§1.3): un rifiuto `400 BODY_INVALID`, `403 HOST_DISABLED` (macchina fermata dal
+  kill-switch) o `402 BILLING_REQUIRED` (spazio di lavoro senza abbonamento attivo, ADR 0418 D5) non
+  consuma il token di installazione; il messaggio d'errore dice cosa fare.
+- **Billing** (§3.13, ADR 0418 D5): ogni registrazione e ogni upgrade dichiarano la versione degli
+  schemi con `X-MonsterTerminal-Schema`; davanti a `402 BILLING_REQUIRED` o alla chiusura `4402` il
+  connettore ritenta ogni 15 minuti come dopo un kill-switch, e si riaggancia da solo quando il
+  tenant attiva l'abbonamento.
 - **Giornale** (§1.12): ogni evento si scrive sul disco prima di partire, con seq crescente; il
   backend conferma con `events.ack` e fa fede il suo segnalibro. Se il backend è indietro (`ACK_AHEAD`
   o un `events.ack` più basso) il giornale riallinea e dichiara gli eventi persi con un
@@ -70,6 +75,31 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   su una richiesta chiusa ha esito `superata`. La risposta data nel terminale chiude la richiesta al
   cambio di stato (`PostToolUse` → `lavora`). Una sola richiesta aperta per sessione; dopo ogni
   `welcome` si rimanda il contesto delle richieste aperte.
+- **Domande dell'agente** (§2.14, §1.21; ADR 0410 A2): Claude Code fa le domande con lo strumento
+  `AskUserQuestion` ed emette per quello lo stesso `PermissionRequest`. L'adattatore lo riconosce e
+  apre una richiesta `domanda` con le `questions` (testo, intestazione, opzioni, `multiSelect`, nei
+  tetti degli schemi 0.5.0) e scrive `attende-input`/`domanda` col `requestId`. La risposta dalla card
+  (`request.respond` con `testo` e `answers`, una per domanda) torna a Claude Code come
+  `decision.behavior: allow` con `updatedInput` = `tool_input` più `answers`; `testo` senza `answers`
+  risponde alla sola domanda che c'è, altrimenti (più domande, `approva`, `nega`) l'esito è
+  `non-supportata` e la card lascia «Apri il terminale». L'Esc sul prompt nel terminale termina l'hook
+  (SIGTERM): il connettore vede la connessione chiusa prima di una decisione, chiude la richiesta e
+  manda `request.closed` con motivo `annullata` (vale anche per un permesso).
+
+  | Evento di Claude Code | `state` | `waitingFor` |
+  |---|---|---|
+  | `UserPromptSubmit` | `lavora` | — |
+  | `Notification` con `notification_type: permission_prompt` | `attende-input` | `permesso` |
+  | `Notification` con `notification_type: idle_prompt` | `attende-input` | `sconosciuto` |
+  | `PermissionRequest` | `attende-input` | `permesso`, col `requestId` |
+  | `PermissionRequest` con `tool_name: AskUserQuestion` | `attende-input` | `domanda`, col `requestId` |
+  | `PostToolUse` | `lavora` | — |
+  | `Stop` | `ha-finito` | — |
+  | `StopFailure` | `errore` | — |
+  | `SessionEnd` | `inattivo` | — |
+
+  La `Notification permission_prompt` che segue di 6 s un `PermissionRequest` (permesso o domanda) non
+  è una transizione: non chiude la richiesta aperta e non scrive un secondo `agent.state`.
 - **Un solo connettore per cartella di stato**: `run` prende un lock (`run.lock`); un secondo avvio sulla
   stessa cartella esce con codice `1` e un messaggio. Le sessioni senza adattatore da 30 minuti passano sotto il timer di
   inattività (soglia della configurazione dell'host, 5 minuti di default), letto dall'attività di tmux.
@@ -78,7 +108,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Riferimenti
 
-- Schemi del protocollo: [`schemas/0.3.0/`](schemas/0.3.0/README.md) (fonte unica del contratto; le
+- Schemi del protocollo: [`schemas/0.5.0/`](schemas/0.5.0/README.md) (fonte unica del contratto; le
   versioni precedenti restano nelle loro cartelle).
 - **Documentazione interna.** Il codice e i commenti citano per numero le decisioni architetturali
   (ADR 0409 il connettore, ADR 0410 gli agenti AI e il catalogo) e per sezione (`§1.x`, `§2.x`) la

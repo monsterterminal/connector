@@ -39,21 +39,23 @@ func (f *fakeJournal) all() []protocol.AgentState {
 // §1.21: la tabella evento di Claude Code → stato, riga per riga.
 func TestCorrispondenzaHookStati(t *testing.T) {
 	cases := []struct {
-		ev, notif, state, waiting string
+		ev, notif, kind, state, waiting string
 	}{
-		{"UserPromptSubmit", "", protocol.StateWorking, ""},
-		{"Notification", "permission_prompt", protocol.StateWaiting, protocol.WaitPermission},
-		{"Notification", "idle_prompt", protocol.StateWaiting, protocol.WaitUnknown},
-		{"PermissionRequest", "", protocol.StateWaiting, protocol.WaitPermission}, // fetta 2, §2.12
-		{"PostToolUse", "", protocol.StateWorking, ""},                            // fetta 2, §2.12
-		{"Stop", "", protocol.StateFinished, ""},
-		{"StopFailure", "", protocol.StateError, ""},
-		{"SessionEnd", "", protocol.StateIdle, ""},
+		{"UserPromptSubmit", "", "", protocol.StateWorking, ""},
+		{"Notification", "permission_prompt", "", protocol.StateWaiting, protocol.WaitPermission},
+		{"Notification", "idle_prompt", "", protocol.StateWaiting, protocol.WaitUnknown},
+		{"PermissionRequest", "", "", protocol.StateWaiting, protocol.WaitPermission}, // fetta 2, §2.12
+		{"PostToolUse", "", "", protocol.StateWorking, ""},                            // fetta 2, §2.12
+		{"Stop", "", "", protocol.StateFinished, ""},
+		{"StopFailure", "", "", protocol.StateError, ""},
+		{"SessionEnd", "", "", protocol.StateIdle, ""},
+		// Fetta 3b, §2.14: PermissionRequest con tool_name AskUserQuestion → attende-input/domanda.
+		{"PermissionRequest", "", protocol.KindQuestion, protocol.StateWaiting, protocol.WaitQuestion},
 	}
 	for _, c := range cases {
-		st, w, ok := StateFor(HookMessage{Event: c.ev, NotificationType: c.notif})
+		st, w, ok := StateFor(HookMessage{Event: c.ev, NotificationType: c.notif, Kind: c.kind})
 		if !ok || st != c.state || w != c.waiting {
-			t.Errorf("%s/%s → %s/%s/%v, atteso %s/%s", c.ev, c.notif, st, w, ok, c.state, c.waiting)
+			t.Errorf("%s/%s/%s → %s/%s/%v, atteso %s/%s", c.ev, c.notif, c.kind, st, w, ok, c.state, c.waiting)
 		}
 	}
 	for _, m := range []HookMessage{{Event: "PreToolUse"}, {Event: "SessionStart"}, {Event: "Notification", NotificationType: "auth_success"}, {Event: "Notification"}} {

@@ -36,7 +36,9 @@ func tmuxPaneSession(pane string) (string, error) {
 
 // cmdHook è il comando che Claude Code esegue a ogni evento (spec §1.21). Non scrive mai sullo standard
 // output, non fallisce mai: fuori da tmux, senza connettore attivo o con un evento ignoto non fa nulla.
-func (a app) cmdHook(event, stateDir string) {
+// ctx finisce col SIGTERM che Claude Code manda all'hook di permesso in attesa quando l'utente annulla
+// il prompt con Esc (§2.14): l'hook chiude la connessione ed esce senza decisione.
+func (a app) cmdHook(ctx context.Context, event, stateDir string) {
 	known := false
 	for _, e := range agents.HookEvents {
 		if e == event {
@@ -75,20 +77,94 @@ func (a app) cmdHook(event, stateDir string) {
 		return
 	}
 	msg.Action = in.ToolName
-	msg.Detail, msg.DetailTruncated = protocol.TruncateDetail(permissionDetail(in.ToolInput))
-	d, err := agents.Ask(hookSocket(stateDir), msg, time.Second, time.Duration(agents.PermissionHookTimeoutSeconds)*time.Second)
+	if in.ToolName == toolAskUserQuestion {
+		// Fetta 3b (§2.14): le domande dell'agente arrivano come PermissionRequest di AskUserQuestion.
+		msg.Kind = protocol.KindQuestion
+		msg.Questions = askQuestions(in.ToolInput)
+		msg.Detail, msg.DetailTruncated = protocol.TruncateDetail(questionDetail(msg.Questions))
+	} else {
+		msg.Detail, msg.DetailTruncated = protocol.TruncateDetail(permissionDetail(in.ToolInput))
+	}
+	d, err := agents.Ask(ctx, hookSocket(stateDir), msg, time.Second, time.Duration(agents.PermissionHookTimeoutSeconds)*time.Second)
 	if err != nil || d.Behavior == "" {
+		return
+	}
+	var decision map[string]any
+	if msg.Kind == protocol.KindQuestion {
+		decision = questionDecision(d, in.ToolInput, msg.Questions)
+	} else {
+		decision = permissionDecision(d)
+	}
+	if decision == nil {
 		return
 	}
 	out := map[string]any{"hookSpecificOutput": map[string]any{
 		"hookEventName": "PermissionRequest",
-		"decision":      permissionDecision(d),
+		"decision":      decision,
 	}}
 	enc, err := json.Marshal(out)
 	if err != nil {
 		return
 	}
 	fmt.Fprintln(a.stdout, string(enc))
+}
+
+// toolAskUserQuestion è lo strumento con cui Claude Code fa le domande (banco del 2026-10-19, §2.14).
+const toolAskUserQuestion = "AskUserQuestion"
+
+// askQuestions decodifica tool_input.questions di AskUserQuestion nella forma di Claude Code
+// (question, header facoltativo, options[]{label, description}, multiSelect); i campi in più
+// dello strumento si ignorano, un input non decodificabile dà nessuna domanda.
+func askQuestions(input json.RawMessage) []protocol.Question {
+	if len(input) == 0 {
+		return nil
+	}
+	var in struct {
+		Questions []protocol.Question `json:"questions"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return nil
+	}
+	return in.Questions
+}
+
+// questionDetail è il contesto di una domanda (§2.14): il testo della prima domanda, più
+// «(+N domande)» se sono più di una.
+func questionDetail(qs []protocol.Question) string {
+	if len(qs) == 0 {
+		return ""
+	}
+	if len(qs) == 1 {
+		return qs[0].Question
+	}
+	return fmt.Sprintf("%s (+%d domande)", qs[0].Question, len(qs)-1)
+}
+
+// questionDecision è la decisione dell'hook per AskUserQuestion (§2.14 fatto 3): allow con
+// updatedInput = tool_input originale, tutti i campi, più answers {«testo della domanda»: «risposta»}.
+// Le risposte del connettore sono per posizione: la chiave è il testo originale della domanda in
+// tool_input (non quello troncato ai tetti dello schema), così Claude Code la riconosce. Senza
+// risposte nessuna decisione: il prompt resta nel terminale.
+func questionDecision(d agents.Decision, input json.RawMessage, qs []protocol.Question) map[string]any {
+	if d.Behavior != "allow" || len(d.Answers) == 0 {
+		return nil
+	}
+	updated := map[string]any{}
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &updated); err != nil {
+			return nil
+		}
+	}
+	answers := map[string]string{}
+	for i, a := range d.Answers {
+		key := a.Question
+		if i < len(qs) {
+			key = qs[i].Question
+		}
+		answers[key] = a.Text
+	}
+	updated["answers"] = answers
+	return map[string]any{"behavior": "allow", "updatedInput": updated}
 }
 
 // permissionDetail riduce tool_input al contesto della richiesta: il comando esatto quando c'è

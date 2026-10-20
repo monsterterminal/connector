@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.5.0/messages/connector-to-backend/request.closed.json",
+  "title": "request.closed",
+  "description": "Il connettore ha chiuso da sé una richiesta ancora aperta (spec §2.14): l'utente ha annullato il prompt nel terminale e Claude Code ha terminato l'hook in attesa. Il backend la porta a «superata» col motivo «annullata». Idempotente: un requestId sconosciuto o già chiuso è ignorato.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "request.closed"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "reason": {
+          "enum": [
+            "annullata"
+          ]
+        }
+      },
+      "required": [
+        "requestId",
+        "reason"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

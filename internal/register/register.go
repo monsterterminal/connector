@@ -69,7 +69,9 @@ func (e *APIError) Hint() string {
 	case "BODY_INVALID":
 		return "dati dell'host non accettati; il token di installazione NON è stato consumato e si può riusare dopo la correzione"
 	case "HOST_DISABLED":
-		return "registrazione rifiutata (HOST_DISABLED): o questa macchina è fermata dal kill-switch del tenant, da riattivare dal pannello, oppure lo spazio di lavoro non ha un abbonamento attivo (stato del billing «none», prova scaduta, sola lettura o chiuso: l'owner lo avvia dalla pagina del billing). Il token di installazione NON è stato consumato: rilanciare dopo"
+		return "registrazione rifiutata (HOST_DISABLED): questa macchina è fermata dal kill-switch del tenant o del super, da riattivare dal pannello degli host. Il token di installazione NON è stato consumato: rilanciare dopo"
+	case "BILLING_REQUIRED":
+		return "registrazione rifiutata (BILLING_REQUIRED): lo spazio di lavoro non ha un abbonamento attivo (prova scaduta, sola lettura o chiuso); l'owner lo avvia dalla pagina del billing, /admin/billing. Il token di installazione NON è stato consumato: rilanciare dopo"
 	case "SERVER_LIMIT":
 		return "il tenant ha raggiunto gli host inclusi nel piano; attivare l'extra o revocare un host dal pannello"
 	case "CONNECTOR_TOO_OLD":
@@ -129,6 +131,7 @@ func (c Client) Replace(ctx context.Context, installToken, currentHostToken stri
 		req.Header.Set(HeaderCurrentHostToken, currentHostToken)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(protocol.HeaderSchema, protocol.SchemaVersion)
 	hc := c.HTTPClient
 	if hc == nil {
 		hc = http.DefaultClient
