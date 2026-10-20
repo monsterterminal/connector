@@ -11,7 +11,7 @@
 #
 #   sh scripts/firma-rilascio.sh --tag v0.2.0 --key ~/chiavi/mt-updates-2026.key [--no-rebuild] [--publish]
 #
-# Serve: gh (autenticato), go (la versione la decide go.mod), openssl ≥ 1.1.1, sha256sum.
+# Serve: gh (autenticato), go (la versione la decide go.mod), openssl ≥ 3.0 (pkeyutl -rawin), sha256sum.
 set -eu
 
 REPO=monsterterminal/connector
@@ -38,6 +38,8 @@ done
 case "$TAG" in v*) ;; *) die "il tag inizia con v" ;; esac
 VERSION=${TAG#v}
 for t in gh openssl sha256sum; do command -v $t >/dev/null 2>&1 || die "serve $t"; done
+openssl pkeyutl -help 2>&1 | grep -q -- '-rawin' \
+	|| die "questo openssl ($(openssl version)) non firma Ed25519 grezzo: serve OpenSSL 3.0 o successivo"
 [ "$REBUILD" = no ] || command -v go >/dev/null 2>&1 || die "serve go per ricompilare (o --no-rebuild, sconsigliato)"
 
 work=$(mktemp -d)

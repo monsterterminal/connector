@@ -108,6 +108,25 @@ check "asset assente da SHA256SUMS rifiutato" '! verify_sha256 "$tmp/SHA256SUMS"
 check "chiave pubblica nello script = impronta dichiarata" '[ "$(printf "%s\n" "$MT_UPDATES_PUBKEY_PEM" | openssl pkey -pubin -outform DER | sha256sum | cut -d" " -f1)" = "$MT_UPDATES_PUBKEY_FINGERPRINT" ]'
 check "impronta dichiarata = 90efb21f2321…" '[ "$MT_UPDATES_PUBKEY_FINGERPRINT" = 90efb21f2321b1a530efff3973b5d8f4f354675af509958f3f08422cd1c43b0d ]'
 
+# --- OpenSSL 1.1.1 (Ubuntu 20.04, Debian 11): niente -rawin, check_tools deve dirlo, non «firma non valida» ---
+mkdir -p "$tmp/vecchio"
+cat >"$tmp/vecchio/openssl" <<'OSSL'
+#!/bin/sh
+# openssl 1.1.1 finto: conosce pkeyutl ma non -rawin.
+case "$1 $2" in
+version*) echo "OpenSSL 1.1.1f  31 Mar 2020" ;;
+"pkeyutl -help") printf '%s\n' "Usage: pkeyutl [options]" " -in infile" " -sigfile file" >&2 ;;
+*) exec "$REAL_OPENSSL" "$@" ;;
+esac
+OSSL
+chmod +x "$tmp/vecchio/openssl"
+check "openssl vero: -rawin riconosciuto" 'openssl_rawin_ok'
+REAL_OPENSSL=$(command -v openssl); export REAL_OPENSSL
+check "openssl 1.1.1: -rawin non riconosciuto" '! (PATH="$tmp/vecchio:$PATH"; openssl_rawin_ok)'
+MT_SKIP_SIGNATURE=no
+oldmsg=$( (PATH="$tmp/vecchio:$PATH"; check_tools) 2>&1) || true
+check "openssl 1.1.1: check_tools si ferma chiedendo OpenSSL 3" 'printf "%s" "$oldmsg" | grep -q "serve OpenSSL 3.0 o successivo"'
+
 # --- check_tools: senza chiave pubblica nello script non si installa (§1.17) ---
 MT_SKIP_SIGNATURE=no
 check "con la chiave vera check_tools passa" '(check_tools) 2>/dev/null'
