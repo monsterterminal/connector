@@ -218,7 +218,14 @@ render_conf() {
 		"installed_version=$5"
 }
 
-# Verifica Ed25519 grezza con OpenSSL (≥ 1.1.1): la firma staccata è i 64 byte di SHA256SUMS.sig.
+# OpenSSL verifica una firma Ed25519 grezza solo dalla 3.0 (`pkeyutl -rawin`): la 1.1.1 di Ubuntu
+# 20.04 e Debian 11 conosce Ed25519 ma rifiuta l'opzione, e la verifica fallirebbe con un falso
+# «firma non valida». Si chiede la capacità, non il numero di versione.
+openssl_rawin_ok() {
+	openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'
+}
+
+# Verifica Ed25519 grezza con OpenSSL (≥ 3.0): la firma staccata è i 64 byte di SHA256SUMS.sig.
 verify_signature() {
 	pub=$1 file=$2 sig=$3
 	[ -s "$pub" ] || return 1
@@ -259,9 +266,9 @@ check_tools() {
 		die "serve curl o wget"
 	fi
 	if [ "$MT_SKIP_SIGNATURE" = no ]; then
-		command -v openssl >/dev/null 2>&1 || die "serve openssl (≥ 1.1.1) per verificare la firma del rilascio"
-		openssl list -public-key-algorithms 2>/dev/null | grep -qi ed25519 \
-			|| die "questo openssl non conosce Ed25519: serve la 1.1.1 o successiva"
+		command -v openssl >/dev/null 2>&1 || die "serve openssl (3.0 o successivo) per verificare la firma del rilascio"
+		openssl_rawin_ok \
+			|| die "questo openssl ($(openssl version 2>/dev/null)) non verifica firme Ed25519 grezze: serve OpenSSL 3.0 o successivo (Ubuntu 22.04+, Debian 12+, RHEL/Alma/Rocky 9+)"
 		[ -n "$MT_UPDATES_PUBKEY_PEM" ] \
 			|| die "questo script non porta la chiave pubblica dei rilasci: non può verificare nulla (vedi SECURITY.md)"
 		# La chiave scritta qui deve avere l'impronta dichiarata: una copia corrotta o ritoccata a metà

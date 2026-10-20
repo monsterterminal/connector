@@ -60,6 +60,10 @@
   firmato e backend finto (`cmd/mt-fakeserver`). Rilievi recepiti: il rilascio si scarica e si
   verifica prima di creare l'utente; `--uninstall` dice che l'utente resta e come toglierlo; il 401
   alla registrazione è documentato nel README.
+- `install.sh` e `scripts/firma-rilascio.sh` chiedono OpenSSL 3.0 o successivo, sondando
+  `pkeyutl -rawin`: la 1.1.1 (Ubuntu 20.04, Debian 11) conosce Ed25519 ma non verifica firme grezze, e
+  install.sh si fermava con un falso «firma non valida». Ora dice cosa serve (Ubuntu 22.04+, Debian
+  12+, RHEL/Alma/Rocky 9+). Il rilascio `v0.2.0` ha ancora il messaggio vecchio.
 
 ## Schemi 0.4.0 — 2026-10-18
 

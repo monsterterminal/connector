@@ -39,7 +39,7 @@ Lo stesso indirizzo vale per il servizio `monsterterminal.com` e per il protocol
 
 Ogni release su GitHub porta `SHA256SUMS` (gli hash di tutti gli asset) e `SHA256SUMS.sig`, la firma
 Ed25519 **grezza** (64 byte) fatta con la chiave degli aggiornamenti; lo stesso per `install.sh` e per
-i manifest `update-manifest-linux-*.json`. Con OpenSSL 1.1.1 o successivo:
+i manifest `update-manifest-linux-*.json`. Con OpenSSL 3.0 o successivo (la 1.1.1 non verifica firme Ed25519 grezze):
 
 ```
 openssl pkeyutl -verify -pubin -inkey mt-updates.pub -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
