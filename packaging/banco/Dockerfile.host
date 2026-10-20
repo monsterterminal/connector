@@ -1,0 +1,17 @@
+# La «macchina del cliente» del banco di prova: Ubuntu 24.04 con systemd come PID 1, i soli strumenti
+# che install.sh richiede (systemctl, curl, openssl, sha256sum, runuser, useradd) più tmux e sudo come
+# su un host vero. Va avviato con --privileged (vedi README: ammesso solo perché il container è
+# usa-e-getta e non espone nulla), --tmpfs /run --tmpfs /run/lock e il cgroup namespace scelto da
+# banco.sh. L'immagine si chiama mt-banco-host.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive container=docker
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		systemd systemd-sysv tmux curl openssl ca-certificates sudo procps \
+	&& rm -rf /var/lib/apt/lists/* \
+	# machine-id vuoto: systemd ne genera uno al primo avvio (il connettore lo legge in register).
+	&& rm -f /etc/machine-id /var/lib/dbus/machine-id && : >/etc/machine-id \
+	# niente getty né logind: non c'è una console
+	&& systemctl mask getty@tty1.service console-getty.service systemd-logind.service >/dev/null 2>&1 || true
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd", "--system"]

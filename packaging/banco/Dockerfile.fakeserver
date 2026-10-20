@@ -1,0 +1,6 @@
+# Il backend finto del banco (cmd/mt-fakeserver), già compilato da banco.sh con l'immagine golang
+# (una sola build alla volta, cache condivisa): qui si copia soltanto il binario statico. Contesto di
+# build: la cartella dist del banco. L'immagine si chiama mt-banco-fakeserver.
+FROM alpine:3.20
+COPY mt-fakeserver /usr/local/bin/mt-fakeserver
+ENTRYPOINT ["/usr/local/bin/mt-fakeserver"]
