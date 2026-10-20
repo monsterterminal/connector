@@ -14,10 +14,15 @@ set -eu
 # Riempiti dal workflow di rilascio (release.yml) e firmati dal BOSS insieme agli altri asset.
 MT_VERSION="@VERSION@"
 MT_RELEASES="https://github.com/monsterterminal/connector/releases/download"
-# Chiave pubblica Ed25519 degli aggiornamenti, PEM (§1.10, §1.17). La chiave privata vive fuori dal
-# server: la custodisce il BOSS. Finché è vuota lo script rifiuta di installare, salvo
+# Chiave pubblica Ed25519 degli aggiornamenti «mt-updates-2026», PEM (§1.10, §1.17): la stessa di
+# SECURITY.md e di internal/signing nel binario. La chiave privata vive fuori dal server, sul PC di
+# chi custodisce i rilasci. Se fosse vuota lo script rifiuterebbe di installare, salvo
 # --insecure-skip-signature, che è una scelta esplicita per le istanze di prova.
-MT_UPDATES_PUBKEY_PEM=""
+MT_UPDATES_PUBKEY_PEM="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAkb+An530Ndo71tCM0i6DByEV+XWkb4xo4/EC3wDWKlk=
+-----END PUBLIC KEY-----"
+# Impronta SHA-256 del DER della chiave, per il confronto a occhio con SECURITY.md.
+MT_UPDATES_PUBKEY_FINGERPRINT=90efb21f2321b1a530efff3973b5d8f4f354675af509958f3f08422cd1c43b0d
 
 MT_BIN=/usr/local/bin/monsterterminal-connector
 MT_ETC=/etc/monsterterminal
@@ -245,6 +250,11 @@ check_tools() {
 			|| die "questo openssl non conosce Ed25519: serve la 1.1.1 o successiva"
 		[ -n "$MT_UPDATES_PUBKEY_PEM" ] \
 			|| die "questo script non porta la chiave pubblica dei rilasci: non può verificare nulla (vedi SECURITY.md)"
+		# La chiave scritta qui deve avere l'impronta dichiarata: una copia corrotta o ritoccata a metà
+		# non installa niente.
+		fp=$(printf '%s\n' "$MT_UPDATES_PUBKEY_PEM" | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+		[ "$fp" = "$MT_UPDATES_PUBKEY_FINGERPRINT" ] \
+			|| die "la chiave pubblica in questo script non ha l'impronta attesa ($MT_UPDATES_PUBKEY_FINGERPRINT): copia corrotta, non installo"
 	else
 		msg "ATTENZIONE: --insecure-skip-signature, la firma del rilascio NON viene verificata."
 	fi

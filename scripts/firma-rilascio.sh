@@ -69,6 +69,11 @@ fi
 
 printf '== Firmo con %s\n' "$KEY"
 openssl pkey -in "$KEY" -pubout -out "$work/pub.pem"
+# La chiave deve essere mt-updates-2026 (SECURITY.md): con un'altra, per esempio quella delle
+# ricette, le firme sarebbero perfette e nessun host le accetterebbe.
+UPDATES_FINGERPRINT=90efb21f2321b1a530efff3973b5d8f4f354675af509958f3f08422cd1c43b0d
+fp=$(openssl pkey -pubin -in "$work/pub.pem" -outform DER | sha256sum | cut -d' ' -f1)
+[ "$fp" = "$UPDATES_FINGERPRINT" ] || die "la chiave $KEY non è mt-updates-2026 (impronta $fp, attesa $UPDATES_FINGERPRINT)"
 sign() {
 	openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$1" -out "$1.sig"
 	openssl pkeyutl -verify -pubin -inkey "$work/pub.pem" -rawin -in "$1" -sigfile "$1.sig" >/dev/null \

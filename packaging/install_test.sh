@@ -99,21 +99,30 @@ printf 'altro' >"$tmp/bin"
 check "binario alterato ⇒ sha256 non corrisponde" '! verify_sha256 "$tmp/SHA256SUMS" "$tmp" bin'
 check "asset assente da SHA256SUMS rifiutato" '! verify_sha256 "$tmp/SHA256SUMS" "$tmp" altro'
 
+# --- la chiave scritta nello script è mt-updates-2026 (§1.17), la stessa di SECURITY.md ---
+check "chiave pubblica nello script = impronta dichiarata" '[ "$(printf "%s\n" "$MT_UPDATES_PUBKEY_PEM" | openssl pkey -pubin -outform DER | sha256sum | cut -d" " -f1)" = "$MT_UPDATES_PUBKEY_FINGERPRINT" ]'
+check "impronta dichiarata = 90efb21f2321…" '[ "$MT_UPDATES_PUBKEY_FINGERPRINT" = 90efb21f2321b1a530efff3973b5d8f4f354675af509958f3f08422cd1c43b0d ]'
+
 # --- check_tools: senza chiave pubblica nello script non si installa (§1.17) ---
-MT_UPDATES_PUBKEY_PEM="" MT_SKIP_SIGNATURE=no
+MT_SKIP_SIGNATURE=no
+check "con la chiave vera check_tools passa" '(check_tools) 2>/dev/null'
+MT_UPDATES_PUBKEY_PEM=$(cat "$tmp/k.pub")
+check "chiave diversa dall'impronta dichiarata ⇒ lo script si ferma" '! (check_tools) 2>/dev/null'
+MT_UPDATES_PUBKEY_PEM=""
 check "senza chiave pubblica lo script si ferma" '! (check_tools) 2>/dev/null'
 
 # --- --dry-run: nessun effetto, e il token non compare mai nell'uscita ---
-MT_UPDATES_PUBKEY_PEM=$(cat "$tmp/k.pub")
+# Lo script sorgente porta la chiave vera; `|| true` perché un die nel sottoshell deve far fallire le
+# prove qui sotto a voce alta, non uscire dalla suite in silenzio (set -e).
 out=$(MONSTERTERMINAL_INSTALL_TOKEN=mti_abcdefghijklmnop0123 sh -c '
-	MT_INSTALL_SOURCED=1; . "$1"; MT_VERSION=0.2.0; MT_UPDATES_PUBKEY_PEM=$2
+	MT_INSTALL_SOURCED=1; . "$1"; MT_VERSION=0.2.0
 	parse_args --dry-run --user "$(id -un)"
 	id() { echo 0; }
 	check_tools 2>/dev/null || true
 	read_token; confirm_root; ensure_user
-	MT_ASSET=finto; MT_TMP=$3
+	MT_ASSET=finto; MT_TMP=$2
 	install_files; register_host; install_service; summary
-' sh "$here/install.sh" "$MT_UPDATES_PUBKEY_PEM" "$tmp" 2>&1)
+' sh "$here/install.sh" "$tmp" 2>&1) || true
 check "dry-run elenca i passi" 'printf "%s" "$out" | grep -q "\[dry-run\] install -d" && printf "%s" "$out" | grep -q "\[dry-run\] runuser"'
 check "dry-run non stampa il token" '! printf "%s" "$out" | grep -q "mti_"'
 check "dry-run non scrive il binario" '[ ! -e /usr/local/bin/monsterterminal-connector.new ]'
