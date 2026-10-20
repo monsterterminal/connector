@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.5.0/events/catalog.installed.json",
+  "title": "catalog.installed",
+  "description": "Ricetta del catalogo installata (§1.8). Schema del campo data del messaggio event.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipeId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "recipeVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "agent": {
+      "$ref": "../common.json#/$defs/agentId"
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 64
+    }
+  },
+  "required": [
+    "recipeId",
+    "recipeVersion",
+    "agent",
+    "version"
+  ]
+}

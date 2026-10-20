@@ -391,7 +391,7 @@ func TestAskSulSocket(t *testing.T) {
 	}
 	got := make(chan res, 1)
 	go func() {
-		d, err := Ask(sock, HookMessage{Event: "PermissionRequest", Session: "lavoro", Action: "Bash", Detail: "ls"}, time.Second, 5*time.Second)
+		d, err := Ask(context.Background(), sock, HookMessage{Event: "PermissionRequest", Session: "lavoro", Action: "Bash", Detail: "ls"}, time.Second, 5*time.Second)
 		got <- res{d, err}
 	}()
 	var rc protocol.RequestContext
@@ -425,7 +425,7 @@ func TestAskSulSocket(t *testing.T) {
 	}
 	cancel()
 	<-done
-	if _, err := Ask(sock, HookMessage{Event: "PermissionRequest", Session: "x", Action: "Bash"}, 200*time.Millisecond, time.Second); err == nil {
+	if _, err := Ask(context.Background(), sock, HookMessage{Event: "PermissionRequest", Session: "x", Action: "Bash"}, 200*time.Millisecond, time.Second); err == nil {
 		t.Fatal("Ask senza connettore riuscito")
 	}
 }

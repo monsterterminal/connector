@@ -33,18 +33,24 @@ type HookMessage struct {
 	Action          string `json:"action,omitempty"`
 	Detail          string `json:"detail,omitempty"`
 	DetailTruncated bool   `json:"detailTruncated,omitempty"`
+	// Kind (fetta 3b, §2.14): protocol.KindQuestion quando lo strumento è AskUserQuestion, con le
+	// domande già nei tetti dello schema (protocol.NormalizeQuestions); vuoto = permesso.
+	Kind      string              `json:"kind,omitempty"`
+	Questions []protocol.Question `json:"questions,omitempty"`
 }
 
 // Decision è la riga che il connettore scrive all'hook di permesso in attesa (§2.12): Behavior vuoto
-// = nessuna decisione, il prompt nel terminale resta l'unica via.
+// = nessuna decisione, il prompt nel terminale resta l'unica via. Answers (§2.14) solo per una
+// domanda: una risposta per domanda, nell'ordine delle domande, che l'hook mette in updatedInput.
 type Decision struct {
-	Behavior string `json:"behavior,omitempty"`
-	Message  string `json:"message,omitempty"`
+	Behavior string            `json:"behavior,omitempty"`
+	Message  string            `json:"message,omitempty"`
+	Answers  []protocol.Answer `json:"answers,omitempty"`
 }
 
-// MaxHookLine è la lunghezza massima di una riga sul socket: il contesto di un permesso (16 KiB) più
-// i metadati.
-const MaxHookLine = 20 << 10
+// MaxHookLine è la lunghezza massima di una riga sul socket: il contesto di un permesso (16 KiB), le
+// domande di AskUserQuestion nei tetti dello schema (meno di 32 KiB, §2.14) e i metadati.
+const MaxHookLine = 64 << 10
 
 // PermissionHandler prende in carico la connessione di un hook di permesso, che resta aperta finché
 // arriva la risposta dalla card o scade la finestra (§2.12).
@@ -66,6 +72,10 @@ func StateFor(m HookMessage) (state, waitingFor string, ok bool) {
 			return protocol.StateWaiting, protocol.WaitUnknown, true
 		}
 	case "PermissionRequest":
+		if m.Kind == protocol.KindQuestion {
+			// Fetta 3b (§1.21, §2.14): AskUserQuestion arriva come PermissionRequest.
+			return protocol.StateWaiting, protocol.WaitQuestion, true
+		}
 		return protocol.StateWaiting, protocol.WaitPermission, true
 	case "PostToolUse":
 		// Fetta 2 (§1.21 «Hook di permesso», §2.12): lo strumento ha girato, l'agente lavora; serve a
@@ -152,8 +162,12 @@ func (t *Tracker) ApplyRequest(session, agent, state, source, waitingFor, reques
 	// Notification permission_prompt di Claude Code (§1.21), che dice la stessa cosa senza conoscere
 	// la richiesta. Se la cambiassimo di chiave chiuderemmo la richiesta appena aperta come superata
 	// (prova dal vivo del 2026-10-18) e scriveremmo un agent.state doppio nel giornale.
+	// Lo stesso vale per una domanda aperta (fetta 3b, §2.14): AskUserQuestion arriva come
+	// PermissionRequest e la Notification che segue dice «permesso», ma la richiesta aperta è la
+	// domanda: la stessa Notification non deve chiuderla.
 	if had && requestID == "" && state == protocol.StateWaiting && prev.agent == agent &&
-		prev.state == state && prev.waiting == waitingFor && prev.requestID != "" {
+		prev.state == state && prev.requestID != "" &&
+		(prev.waiting == waitingFor || (prev.waiting == protocol.WaitQuestion && waitingFor == protocol.WaitPermission)) {
 		t.mu.Unlock()
 		return false, nil
 	}
@@ -270,7 +284,10 @@ func (t *Tracker) serve(c net.Conn) {
 // Ask manda un hook di permesso al connettore attivo e aspetta la sua decisione (§2.12): la
 // connessione resta aperta finché la card risponde o la finestra scade. Senza connettore restituisce
 // subito nessuna decisione. Una decisione vuota = il prompt del terminale resta l'unica via.
-func Ask(path string, m HookMessage, connectTimeout, wait time.Duration) (Decision, error) {
+// Alla fine di ctx (il SIGTERM che Claude Code manda all'hook quando l'utente annulla il prompt con
+// Esc, §2.14) la connessione si chiude subito: per il connettore è il segnale che la richiesta è
+// annullata nel terminale.
+func Ask(ctx context.Context, path string, m HookMessage, connectTimeout, wait time.Duration) (Decision, error) {
 	raw, err := json.Marshal(m)
 	if err != nil {
 		return Decision{}, err
@@ -283,6 +300,15 @@ func Ask(path string, m HookMessage, connectTimeout, wait time.Duration) (Decisi
 		return Decision{}, err
 	}
 	defer c.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.Close() // sblocca la lettura: l'hook esce senza decisione
+		case <-done:
+		}
+	}()
 	_ = c.SetWriteDeadline(time.Now().Add(connectTimeout))
 	if _, err := c.Write(append(raw, '\n')); err != nil {
 		return Decision{}, err

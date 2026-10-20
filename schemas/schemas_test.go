@@ -16,7 +16,7 @@ import (
 // Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12), 0.2.0 (aperta il 2026-10-16,
 // spec §1.15), 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context) e 0.4.0 (aperta il
 // 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json). Ogni test gira su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0"}
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -54,6 +54,16 @@ var wantMessages = map[string]map[string][]string{
 		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
 			"request.context", "request.respond.result", "session.closed", "session.opened", "sessions.list.result",
 			"update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "request.respond",
+			"session.close", "session.config", "session.open", "session.resize", "sessions.list", "update.available",
+			"welcome"},
+	},
+	// 0.5.0 (2026-10-19, ADR 0410 A2, spec §2.14): request.context riceve questions, request.respond
+	// riceve answers, e nasce request.closed (il connettore chiude da sé una richiesta annullata).
+	"0.5.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
+			"request.closed", "request.context", "request.respond.result", "session.closed", "session.opened",
+			"sessions.list.result", "update.result"},
 		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "request.respond",
 			"session.close", "session.config", "session.open", "session.resize", "sessions.list", "update.available",
 			"welcome"},
@@ -391,6 +401,78 @@ func TestZeroQuattroEstendeZeroTre(t *testing.T) {
 	}
 	if len(curCodes) != len(oldCodes)+1 {
 		t.Errorf("0.4.0 aggiunge %d codici, atteso 1", len(curCodes)-len(oldCodes))
+	}
+}
+
+// TestZeroCinqueEstendeZeroQuattro: la 0.5.0 non toglie nulla alla 0.4.0 (file, proprietà) e aggiunge
+// solo ciò che §2.14 prevede: questions (opzionale) in request.context, answers (opzionale) in
+// request.respond, il messaggio request.closed. Tutto il resto resta byte per byte uguale (ADR 0410 A2).
+func TestZeroCinqueEstendeZeroQuattro(t *testing.T) {
+	old, cur := loadAll(t, "0.4.0"), loadAll(t, "0.5.0")
+	props := func(n any) map[string]any {
+		m, _ := n.(map[string]any)
+		p, _ := m["properties"].(map[string]any)
+		return p
+	}
+	bodyProps := func(doc map[string]any) map[string]any { return props(props(doc)["body"]) }
+	required := func(doc map[string]any) map[string]bool {
+		out := map[string]bool{}
+		b, _ := props(doc)["body"].(map[string]any)
+		r, _ := b["required"].([]any)
+		for _, k := range r {
+			out[k.(string)] = true
+		}
+		return out
+	}
+	changed := map[string]bool{
+		"messages/connector-to-backend/request.context.json": true,
+		"messages/backend-to-connector/request.respond.json": true,
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.5.0", rel)
+			continue
+		}
+		for k := range props(o) {
+			if _, ok := props(c)[k]; !ok {
+				t.Errorf("%s: proprietà %s sparita", rel, k)
+			}
+		}
+		if changed[rel] {
+			for k := range bodyProps(o) {
+				if _, ok := bodyProps(c)[k]; !ok {
+					t.Errorf("%s: campo %s del corpo sparito", rel, k)
+				}
+			}
+			if string(mustJSON(t, map[string]any{"r": required(o)})) != string(mustJSON(t, map[string]any{"r": required(c)})) {
+				t.Errorf("%s: 0.5.0 cambia i campi obbligatori del corpo", rel)
+			}
+			continue
+		}
+		if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+			t.Errorf("%s: 0.5.0 cambia un file che doveva restare uguale alla 0.4.0", rel)
+		}
+	}
+	ctx := bodyProps(cur["messages/connector-to-backend/request.context.json"])
+	if _, ok := ctx["questions"]; !ok {
+		t.Error("request.context 0.5.0 senza questions")
+	}
+	if _, ok := bodyProps(old["messages/connector-to-backend/request.context.json"])["questions"]; ok {
+		t.Error("questions non deve esistere in 0.4.0")
+	}
+	resp := bodyProps(cur["messages/backend-to-connector/request.respond.json"])
+	if _, ok := resp["answers"]; !ok {
+		t.Error("request.respond 0.5.0 senza answers")
+	}
+	if _, ok := cur["messages/connector-to-backend/request.closed.json"]; !ok {
+		t.Error("request.closed manca in 0.5.0")
+	}
+	if _, ok := old["messages/connector-to-backend/request.closed.json"]; ok {
+		t.Error("request.closed non deve esistere in 0.4.0")
+	}
+	if len(cur) != len(old)+1 {
+		t.Errorf("0.5.0 aggiunge %d file, atteso 1", len(cur)-len(old))
 	}
 }
 

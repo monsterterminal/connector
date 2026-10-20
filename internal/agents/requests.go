@@ -16,12 +16,13 @@ import (
 	"github.com/monsterterminal/connector/internal/protocol"
 )
 
-// Le richieste dell'agente (spec §2.9, §2.12; ADR 0410). Un hook PermissionRequest di Claude Code
-// apre una richiesta: il connettore manda il contesto al backend fuori dal giornale (request.context),
-// scrive attende-input/permesso col requestId nel giornale, e tiene l'hook in attesa per la finestra
-// adattiva. Chi risponde prima vince: il prompt nel terminale (che Claude Code mostra in parallelo,
-// §1.21) o la card (request.respond). L'hook riceve una riga Decision; una riga vuota = nessuna
-// decisione, il prompt resta.
+// Le richieste dell'agente (spec §2.9, §2.12, §2.14; ADR 0410). Un hook PermissionRequest di Claude
+// Code apre una richiesta: il connettore manda il contesto al backend fuori dal giornale
+// (request.context), scrive attende-input/permesso (o /domanda, fetta 3b) col requestId nel giornale,
+// e tiene l'hook in attesa per la finestra adattiva. Chi risponde prima vince: il prompt nel terminale
+// (che Claude Code mostra in parallelo, §1.21) o la card (request.respond). L'hook riceve una riga
+// Decision; una riga vuota = nessuna decisione, il prompt resta. Se l'hook chiude la connessione prima
+// (SIGTERM all'Esc sul prompt, §2.14) la richiesta è annullata: request.closed al backend.
 
 // Out è la connessione vista dal gestore: solo messaggi di controllo.
 type Out interface {
@@ -56,6 +57,9 @@ type request struct {
 	answered bool
 	closed   bool
 }
+
+// kind della richiesta: permesso, o domanda con le sue domande (vuote = domanda senza questions).
+func (q *request) kind() string { return q.ctx.Kind }
 
 // Requests tiene le richieste aperte dell'host.
 type Requests struct {
@@ -168,14 +172,32 @@ func (r *Requests) HandlePermission(m HookMessage, c net.Conn) {
 	if len(action) > protocol.MaxRequestAction {
 		action = action[:protocol.MaxRequestAction]
 	}
+	kind := protocol.KindPermission
+	var questions []protocol.Question
+	if m.Kind == protocol.KindQuestion {
+		// Fetta 3b (§2.14): le domande nei tetti dello schema; rifiutate, la card resta al testo libero.
+		kind = protocol.KindQuestion
+		var cut, ok bool
+		questions, cut, ok = protocol.NormalizeQuestions(m.Questions)
+		if cut {
+			r.cfg.Logger.Info("domande troncate ai tetti dello schema", "sessione", m.Session)
+		}
+		if !ok && len(m.Questions) > 0 {
+			r.cfg.Logger.Warn("domande fuori dallo schema, la card resta al testo libero", "sessione", m.Session, "domande", len(m.Questions))
+		}
+	}
 	now := r.cfg.Now()
 	q := &request{
 		id: protocol.NewUUID(), session: m.Session, conn: c, decision: make(chan Decision, 1),
 		deadline: now.Add(r.Window(m.Session)),
 	}
 	q.ctx = protocol.RequestContext{
-		RequestID: q.id, Session: m.Session, Agent: protocol.AgentClaude, Kind: protocol.KindPermission,
-		Action: action, Detail: detail, Deadline: protocol.Deadline(q.deadline),
+		RequestID: q.id, Session: m.Session, Agent: protocol.AgentClaude, Kind: kind,
+		Action: action, Detail: detail, Deadline: protocol.Deadline(q.deadline), Questions: questions,
+	}
+	waitingFor := protocol.WaitPermission
+	if kind == protocol.KindQuestion {
+		waitingFor = protocol.WaitQuestion
 	}
 	r.mu.Lock()
 	if prev := r.bySession[m.Session]; prev != nil {
@@ -191,22 +213,52 @@ func (r *Requests) HandlePermission(m HookMessage, c net.Conn) {
 	if out != nil {
 		_ = out.Control(protocol.TypeRequestContext, "", q.ctx)
 	}
-	if _, err := r.tr.ApplyRequest(m.Session, protocol.AgentClaude, protocol.StateWaiting, protocol.SourceHook, protocol.WaitPermission, q.id); err != nil {
+	if _, err := r.tr.ApplyRequest(m.Session, protocol.AgentClaude, protocol.StateWaiting, protocol.SourceHook, waitingFor, q.id); err != nil {
 		r.cfg.Logger.Warn("stato dell'agente non registrato", "errore", err.Error())
 	}
-	r.cfg.Logger.Info("richiesta aperta", "sessione", m.Session, "requestId", q.id, "finestra", q.deadline.Sub(now).String())
+	r.cfg.Logger.Info("richiesta aperta", "sessione", m.Session, "requestId", q.id, "tipo", kind, "domande", len(questions), "finestra", q.deadline.Sub(now).String())
+
+	// L'hook non scrive più nulla dopo la sua riga: una lettura che finisce (EOF o errore) prima della
+	// decisione vuol dire che il processo dell'hook è morto, cioè l'utente ha annullato il prompt nel
+	// terminale (SIGTERM entro ~100 ms, §2.14 fatto 4). La chiusura della connessione da parte nostra,
+	// alla fine, sblocca comunque questa lettura.
+	gone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, c)
+		close(gone)
+	}()
 
 	timer := time.NewTimer(q.deadline.Sub(now))
 	defer timer.Stop()
 	var d Decision
+	cancelled := false
 	select {
 	case d = <-q.decision:
 	case <-timer.C:
 		r.cfg.Logger.Info("finestra scaduta, il prompt resta nel terminale", "requestId", q.id)
+	case <-gone:
+		r.mu.Lock()
+		// Una decisione arrivata nello stesso istante vale: la richiesta è risposta, non annullata.
+		if q.answered || q.closed {
+			r.mu.Unlock()
+			select {
+			case d = <-q.decision:
+			default:
+			}
+			break
+		}
+		cancelled = true
+		r.forgetLocked(q)
+		r.mu.Unlock()
 	}
 	r.mu.Lock()
 	r.forgetLocked(q)
 	r.mu.Unlock()
+	if cancelled {
+		r.cfg.Logger.Info("richiesta annullata nel terminale", "sessione", m.Session, "requestId", q.id)
+		r.send(protocol.TypeRequestClosed, "", protocol.RequestClosed{RequestID: q.id, Reason: protocol.ReasonCancelled})
+		return
+	}
 	writeDecision(c, d)
 }
 
@@ -219,20 +271,54 @@ func (r *Requests) respond(b protocol.RequestRespond) string {
 	if q == nil || q.closed || q.answered {
 		return protocol.OutcomeSuperseded
 	}
-	q.answered = true
-	d := Decision{}
-	switch b.Answer {
-	case protocol.AnswerApprove:
-		d.Behavior = "allow"
-	case protocol.AnswerDeny:
-		d = Decision{Behavior: "deny", Message: "Negato dalla card di MonsterTerminal."}
-	case protocol.AnswerText:
-		// Il testo arriva a Claude Code come motivo del rifiuto: lo legge come indicazione dell'utente
-		// senza che nessuno scriva nel terminale (§2.12).
-		d = Decision{Behavior: "deny", Message: b.Text}
+	d, ok := decisionFor(q, b)
+	if !ok {
+		// La richiesta resta aperta: la card lo dice e lascia «Apri il terminale» (§2.12, §2.14).
+		return protocol.OutcomeUnsupported
 	}
+	q.answered = true
 	q.decision <- d
 	return protocol.OutcomeDelivered
+}
+
+// decisionFor traduce la risposta della card nella decisione dell'hook. Permesso (§2.12): approva →
+// allow, nega → deny, testo → deny col testo come motivo. Domanda (§2.14): solo «testo»; con answers una
+// risposta per domanda; senza answers il testo vale come risposta alla sola domanda che c'è, e con
+// più domande (o con domande non nei tetti, quindi senza questions) è non-supportata, come approva e
+// nega. Le risposte si abbinano per posizione, non per testo: l'hook ricostruisce le chiavi dal
+// tool_input originale.
+func decisionFor(q *request, b protocol.RequestRespond) (Decision, bool) {
+	if q.kind() != protocol.KindQuestion {
+		switch b.Answer {
+		case protocol.AnswerApprove:
+			return Decision{Behavior: "allow"}, true
+		case protocol.AnswerDeny:
+			return Decision{Behavior: "deny", Message: "Negato dalla card di MonsterTerminal."}, true
+		case protocol.AnswerText:
+			// Il testo arriva a Claude Code come motivo del rifiuto: lo legge come indicazione
+			// dell'utente senza che nessuno scriva nel terminale (§2.12).
+			return Decision{Behavior: "deny", Message: b.Text}, true
+		}
+		return Decision{}, false
+	}
+	if b.Answer != protocol.AnswerText {
+		return Decision{}, false
+	}
+	qs := q.ctx.Questions
+	switch {
+	case len(b.Answers) > 0:
+		if len(b.Answers) != len(qs) {
+			return Decision{}, false
+		}
+		answers := make([]protocol.Answer, len(qs))
+		for i, a := range b.Answers {
+			answers[i] = protocol.Answer{Question: qs[i].Question, Text: a.Text}
+		}
+		return Decision{Behavior: "allow", Answers: answers}, true
+	case len(qs) == 1:
+		return Decision{Behavior: "allow", Answers: []protocol.Answer{{Question: qs[0].Question, Text: b.Text}}}, true
+	}
+	return Decision{}, false
 }
 
 // onTransition chiude come superata la richiesta aperta di una sessione il cui stato non è più
