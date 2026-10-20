@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -34,6 +35,10 @@ import (
 
 // HeaderCurrentHostToken è l'header con cui il connettore prova il possesso dell'host da sostituire.
 const HeaderCurrentHostToken = "X-MonsterTerminal-Host-Token"
+
+// HeaderSchema è l'header con cui il connettore dichiara la versione degli schemi che parla (dalla
+// 0.4.0, ADR 0418 D5): il server finto lo registra per ogni registrazione e non lo giudica.
+const HeaderSchema = "X-MonsterTerminal-Schema"
 
 // RateLimit è il limite di messaggi al secondo per host del backend (§1.17).
 const RateLimit = 50
@@ -64,7 +69,13 @@ type Rejection struct {
 
 // Server è il backend finto.
 type Server struct {
+	// TLS è il server di prova avviato da New; è nil per un server nato con NewDetached.
 	TLS *httptest.Server
+	mux *http.ServeMux
+
+	// Notify, se impostata, è chiamata fuori dal lock a ogni evento osservabile ("register",
+	// "upgrade", "connect", "hello"): il banco la usa per riscrivere lo stato senza fare polling.
+	Notify func(event string)
 
 	// PingInterval è l'intervallo dei ping dell'heartbeat; zero = nessun ping.
 	PingInterval time.Duration
@@ -88,6 +99,7 @@ type Server struct {
 	disabledMachine map[string]bool
 	registrations   []register.Info
 	replaceHeaders  []string
+	schemaHeaders   []string
 	hellos          chan protocol.Hello
 	connects        int
 	upgrades        int
@@ -96,8 +108,17 @@ type Server struct {
 	closeAfterEvent map[int64]websocket.StatusCode
 }
 
-// New avvia il server su TLS con certificato autofirmato.
+// New avvia il server su TLS con certificato autofirmato (httptest): è la forma dei test.
 func New() *Server {
+	s := NewDetached()
+	s.TLS = httptest.NewTLSServer(s.Handler())
+	return s
+}
+
+// NewDetached costruisce il server senza ascoltare: chi lo usa lo monta con Handler o Serve su un
+// listener proprio (il banco di prova in packaging/banco, con il certificato della sua CA). BaseURL,
+// WSURL e Client valgono solo per un server nato con New.
+func NewDetached() *Server {
 	s := &Server{
 		installTokens:   map[string]time.Time{},
 		hosts:           map[string]*host{},
@@ -106,11 +127,20 @@ func New() *Server {
 		hellos:          make(chan protocol.Hello, 64),
 		HelloTimeout:    10 * time.Second,
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/register", s.handleRegister)
-	mux.HandleFunc("GET /v1", s.handleWS)
-	s.TLS = httptest.NewTLSServer(mux)
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
+	s.mux.HandleFunc("GET /v1", s.handleWS)
 	return s
+}
+
+// Handler è il backend finto come http.Handler: POST /v1/register e l'upgrade GET /v1.
+func (s *Server) Handler() http.Handler { return s.mux }
+
+// Serve serve il backend finto sul listener dato (già TLS, se serve) finché il listener non si
+// chiude; restituisce l'errore di http.Server.Serve, http.ErrServerClosed compreso.
+func (s *Server) Serve(ln net.Listener) error {
+	srv := &http.Server{Handler: s.mux, ReadHeaderTimeout: 10 * time.Second}
+	return srv.Serve(ln)
 }
 
 // Close spegne il server e chiude di colpo le connessioni WebSocket aperte, come una caduta.
@@ -126,7 +156,15 @@ func (s *Server) Close() {
 	for _, c := range open {
 		c.CloseNow()
 	}
-	s.TLS.Close()
+	if s.TLS != nil {
+		s.TLS.Close()
+	}
+}
+
+func (s *Server) notify(event string) {
+	if s.Notify != nil {
+		s.Notify(event)
+	}
 }
 
 // BaseURL è l'origine https del server.
@@ -167,7 +205,14 @@ func (s *Server) ReplaceHeaders() []string {
 	return append([]string(nil), s.replaceHeaders...)
 }
 
-// Hellos riceve ogni hello valido.
+// SchemaHeaders restituisce l'header X-MonsterTerminal-Schema di ogni registrazione ("" se assente).
+func (s *Server) SchemaHeaders() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.schemaHeaders...)
+}
+
+// Hellos riceve ogni hello valido. Il canale ha 64 posti: chi tiene il server a lungo lo svuota.
 func (s *Server) Hellos() <-chan protocol.Hello { return s.hellos }
 
 // Connects conta gli upgrade autenticati.
@@ -362,6 +407,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	s.registrations = append(s.registrations, info)
 	s.replaceHeaders = append(s.replaceHeaders, current)
+	s.schemaHeaders = append(s.schemaHeaders, r.Header.Get(HeaderSchema))
 	// Sostituzione (§1.3): solo col token attuale di un host vivo della stessa macchina. Senza
 	// prova, o con una prova che non torna, l'host nuovo nasce accanto al vecchio.
 	var replaced *host
@@ -381,6 +427,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if oldConn != nil {
 		_ = oldConn.Close(4401, "")
 	}
+	s.notify("register")
 	resp := map[string]any{"hostId": id, "hostToken": token, "tenantLabel": "Acme", "protocol": protocol.Version}
 	if extra {
 		resp["tenantId"] = "da-non-accettare"
@@ -399,6 +446,7 @@ func (s *Server) consumeLocked(tok string) bool {
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.notify("upgrade")
 	s.mu.Lock()
 	s.upgrades++
 	if len(s.rejections) > 0 {
@@ -440,6 +488,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	old := h.conn
 	h.conn = conn
 	s.mu.Unlock()
+	s.notify("connect")
 	if old != nil {
 		_ = old.Close(4409, "")
 	}
@@ -477,6 +526,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.hellos <- hello
+	s.notify("hello")
 
 	welcome := protocol.Welcome{
 		HostID: h.id, Protocol: protocol.Version, ServerTime: protocol.Timestamp(time.Now()),

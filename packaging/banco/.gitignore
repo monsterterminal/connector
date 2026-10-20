@@ -1,0 +1,5 @@
+# Il banco lavora in ~/mt-banco (BANCO_HOME), mai qui; le chiavi usa-e-getta non si committano.
+keys/
+certs/
+*.key
+*.pem
