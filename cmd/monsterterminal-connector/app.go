@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/hostconf"
 	"github.com/monsterterminal/connector/internal/hostinfo"
 	"github.com/monsterterminal/connector/internal/journal"
 	"github.com/monsterterminal/connector/internal/protocol"
@@ -29,6 +30,7 @@ const (
 	defaultServer    = "https://connect.monsterterminal.com"
 	defaultTokenFile = "/etc/monsterterminal/host-token"
 	defaultStateDir  = "/var/lib/monsterterminal"
+	defaultConfig    = "/etc/monsterterminal/connector.conf"
 )
 
 // Codici di uscita (vedi il commento del package).
@@ -83,6 +85,7 @@ func (a app) run(ctx context.Context, args []string) int {
 	server := fs.String("server", defaultServer, "origine https del servizio")
 	tokenFile := fs.String("token-file", defaultTokenFile, "file del token dell'host")
 	stateDir := fs.String("state-dir", defaultStateDir, "cartella del giornale degli eventi")
+	configFile := fs.String("config", defaultConfig, "run: impostazioni decise dal cliente sull'host (§1.11); se manca valgono i default")
 	replace := fs.Bool("replace", false, "register: sostituisce l'host registrato su questa macchina (serve il suo token attuale)")
 	yes := fs.Bool("yes", false, "hooks install: risponde sì alla domanda di consenso senza terminale")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -122,7 +125,7 @@ func (a app) run(ctx context.Context, args []string) int {
 	case "register":
 		err = a.cmdRegister(ctx, *server, *tokenFile, *stateDir, *replace)
 	case "run":
-		err = a.cmdRun(ctx, log, *server, *tokenFile, *stateDir)
+		err = a.cmdRun(ctx, log, *server, *tokenFile, *stateDir, *configFile)
 	case "version":
 		fmt.Fprintln(a.stdout, version)
 	case "hooks":
@@ -144,7 +147,7 @@ func (a app) run(ctx context.Context, args []string) int {
 }
 
 func (a app) usage() {
-	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace]|run|version|hooks install [-yes]|hooks remove [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
+	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace]|run [-config FILE]|version|hooks install [-yes]|hooks remove [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
 }
 
 func (a app) client(timeout time.Duration) *http.Client {
@@ -222,10 +225,18 @@ func (a app) cmdRegister(ctx context.Context, server, tokenFile, stateDir string
 	return nil
 }
 
-func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, stateDir string) error {
+func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, stateDir, configFile string) error {
 	if !strings.HasPrefix(server, "https://") {
 		return errors.New("il servizio deve essere https")
 	}
+	// Le impostazioni del cliente (§1.11) si leggono una volta all'avvio: chi le cambia riavvia il
+	// servizio. Un file malformato ferma l'avvio, non lo lascia partire con i default.
+	hc, found, err := hostconf.Load(configFile)
+	if err != nil {
+		return fmt.Errorf("configurazione dell'host: %w", err)
+	}
+	log.Info("configurazione dell'host", "file", configFile, "presente", found,
+		"aggiornamentiAutomatici", hc.AutoUpdate, "installazioneDalCatalogo", hc.CatalogInstall)
 	tok, err := register.LoadToken(tokenFile)
 	if err != nil {
 		return err
@@ -262,6 +273,7 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 			return protocol.Hello{
 				ConnectorVersion: version, Protocol: protocol.Version, OS: "linux", Arch: hi.Arch,
 				RunAsUser: hi.User, RunAsRoot: hi.Root, Capabilities: a.capabilities(),
+				AutoUpdateEnabled: hc.AutoUpdate, CatalogInstallEnabled: hc.CatalogInstall,
 				Agents: []protocol.Agent{},
 			}
 		},
