@@ -9,11 +9,17 @@
   `--uninstall`, `--dry-run`; banco di prova `packaging/install_test.sh`.
 - Rilasci: `release.yml` crea una bozza con build riproducibili, `SHA256SUMS`, manifest degli
   aggiornamenti e `install.sh`; `scripts/firma-rilascio.sh` ricompila, confronta, firma e pubblica dal PC
-  di chi custodisce la chiave. La chiave pubblica nello script e nel binario arriva col primo rilascio
-  firmato; fino ad allora `install.sh` rifiuta di installare.
+  di chi custodisce la chiave.
+- Chiavi pubbliche `mt-updates-2026` e `mt-recipes-2026` (§1.17, generate il 2026-10-19 fuori dai
+  server) in `internal/signing` (verifica Ed25519 grezza e lettura dei manifest di aggiornamento
+  firmati, §1.10), in `packaging/install.sh` e in SECURITY.md con le impronte; un test confronta i tre
+  posti. `scripts/firma-rilascio.sh` rifiuta una chiave diversa da `mt-updates-2026`. Il primo
+  rilascio firmato è `v0.2.0`.
 - `run -config FILE` (default `/etc/monsterterminal/connector.conf`): legge le impostazioni decise dal
   cliente sull'host (`auto_update`, `catalog_install`) e le riporta in `hello` (§1.11), che prima
   dichiarava sempre `false`. File assente = default accesi; file malformato = il servizio non parte.
+- `install.sh --releases-url URL` (solo https): base da cui scaricare il rilascio al posto di GitHub,
+  per i banchi di prova; la firma resta verificata con la chiave scritta nello script.
 
 ## Schemi 0.4.0 — 2026-10-18
 
