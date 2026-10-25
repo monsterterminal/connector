@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.0 — 2026-10-25
+
+Secondo rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa
+gli schemi 0.5.0 (la v0.2.0 implementava la 0.3.0) e lo dichiara con `X-MonsterTerminal-Schema`.
+Raccoglie le voci «non rilasciato» qui sotto entrate dopo la v0.2.0:
+
+- `install.sh` e `scripts/firma-rilascio.sh` chiedono OpenSSL 3.0 o successivo e lo sondano: con la
+  1.1.1 (Ubuntu 20.04, Debian 11) la v0.2.0 si fermava con un falso «firma non valida», ora dice cosa
+  serve.
+- `install.sh` verifica il rilascio prima di creare l'utente; `--uninstall` dice che l'utente resta e
+  come toglierlo; `--releases-url` per i banchi di prova.
+- Le domande dell'agente dalla card (schemi 0.5.0: `questions`, `answers`, `request.closed`) e l'Esc
+  nel terminale che chiude la richiesta.
+- `BILLING_REQUIRED` (schemi 0.4.0): alla registrazione rimanda a `/admin/billing`, a `run` riprova
+  ogni 15 minuti finché l'abbonamento non è attivo.
+- Banco end-to-end di `install.sh` in un container systemd (`packaging/banco`).
+
 ## Schemi 0.5.0 — 2026-10-19
 
 - Solo aggiunte rispetto a 0.4.0 (protocollo sempre 1), ADR 0410 A2, spec §2.14: `questions`
