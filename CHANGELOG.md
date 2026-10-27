@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0 — 2026-10-27
+
+Terzo rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
+schemi 0.6.0 (la v0.3.0 implementava la 0.5.0) e lo dichiara con `X-MonsterTerminal-Schema`.
+Compatibile all'indietro con un backend agli schemi 0.5.0: i comandi nuovi restano inattivi finché il
+backend non li manda.
+
+- Il terminale unico sugli host del connettore (ADR 0409 A1.2): ridisegno, Ctrl+C dedicato, appunti
+  dall'ultima selezione, chiusura, rinomina, zoom e cattura del testo di una sessione tmux, più
+  l'apertura con le dimensioni della finestra tmux (`fitToPane`). Solo verbi tmux fissi su una sessione
+  dal nome validato: il protocollo continua a non eseguire comandi arbitrari.
+
 ## Schemi 0.6.0 — 2026-10-27
 
 - Solo aggiunte rispetto a 0.5.0 (protocollo sempre 1), ADR 0409 A1.2 (terminale unico, lotto 3):

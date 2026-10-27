@@ -89,7 +89,12 @@ check "firma valida verificata" 'verify_signature "$tmp/k.pub" "$tmp/SHA256SUMS"
 printf 'x' >>"$tmp/SHA256SUMS"
 check "SHA256SUMS alterato ⇒ firma non valida" '! verify_signature "$tmp/k.pub" "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig"'
 (cd "$tmp" && sha256sum bin >SHA256SUMS)
-printf '\0' | dd of="$tmp/SHA256SUMS.sig" bs=1 seek=3 count=1 conv=notrunc 2>/dev/null
+# Il quarto byte si CAMBIA sempre: scriverci uno zero lasciava la firma intatta quando il byte valeva
+# già zero (una volta su 256, con la chiave nuova a ogni giro), e il test falliva a caso.
+b=$(od -An -tu1 -j3 -N1 "$tmp/SHA256SUMS.sig" | tr -d ' ')
+if [ "$b" = 0 ]; then v='\001'; else v='\0'; fi
+printf '%b' "$v" | dd of="$tmp/SHA256SUMS.sig" bs=1 seek=3 count=1 conv=notrunc 2>/dev/null
+check "firma corrotta: il byte è cambiato" '[ "$(od -An -tu1 -j3 -N1 "$tmp/SHA256SUMS.sig" | tr -d " ")" != "$b" ]'
 check "firma corrotta ⇒ non valida" '! verify_signature "$tmp/k.pub" "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig"'
 openssl genpkey -algorithm ed25519 -out "$tmp/k2.pem" 2>/dev/null
 openssl pkey -in "$tmp/k2.pem" -pubout -out "$tmp/k2.pub" 2>/dev/null
