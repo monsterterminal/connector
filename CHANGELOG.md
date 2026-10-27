@@ -1,5 +1,31 @@
 # Changelog
 
+## Schemi 0.6.0 — 2026-10-27
+
+- Solo aggiunte rispetto a 0.5.0 (protocollo sempre 1), ADR 0409 A1.2 (terminale unico, lotto 3):
+  `fitToPane` opzionale in `session.open`; i messaggi per canale `session.refresh`, `session.interrupt`,
+  `session.buffer` e per sessione `session.kill`, `session.rename`, `session.zoom` (`on` facoltativo:
+  assente = inverti), `session.capture` (`range` ∈ `screen`, `view`, `last200`, `last1000`), ognuno con
+  la risposta `<tipo>.result` che esige `re`. `session.buffer.result.text` è stringa o `null` (al più
+  64 KiB), `session.capture.result.text` al più 256 KiB, `session.zoom.result.panes` facoltativo. Codici
+  di `error` nuovi (non sono un enum): `CAPTURE_TOO_LARGE`, `SESSION_EXISTS`, `TMUX_UNAVAILABLE`.
+
+## Connettore — 2026-10-27 (non rilasciato)
+
+- I comandi del terminale unico (schemi 0.6.0, ADR 0409 A1.2), gli omologhi di quelli che il backend
+  lancia via SSH: ridisegno del solo client tmux del canale (`refresh-client` sul suo tty, trovato per
+  PID), Ctrl+C dedicato (`send-keys -X cancel` poi `C-c`; rifiutato su un canale in sola lettura),
+  ultimo paste-buffer se creato da al più 15 secondi, chiusura della sessione (i canali agganciati
+  ricevono `session.closed` `session-ended`), rinomina (i canali restano aperti e seguono il nome
+  nuovo), zoom che imposta o inverte lo stato (`resize-pane -Z` solo con più pane), cattura per range
+  col tetto di 256 KiB. Bersaglio sempre esatto (`=nome`), argomenti fissi, timeout di 5 secondi per
+  comando; un tmux che non parte o non risponde è `TMUX_UNAVAILABLE`.
+- `fitToPane`: il canale nasce con le dimensioni della finestra tmux più la barra di stato, così
+  l'aggancio non ridimensiona la finestra; `session.opened` porta le dimensioni vere.
+- Gli schemi dichiarati con `X-MonsterTerminal-Schema` diventano 0.6.0. Un backend 0.5.0 non manda i
+  messaggi nuovi e accetta tutto ciò che il connettore gli manda: la compatibilità all'indietro è
+  piena.
+
 ## v0.3.0 — 2026-10-25
 
 Secondo rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa

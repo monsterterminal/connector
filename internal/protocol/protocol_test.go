@@ -86,13 +86,28 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"events/connector.restarted.json", ConnectorRestarted{}},
 		{"events/journal.truncated.json", JournalTruncated{}},
 		{"events/agent.state.json", AgentState{WaitingFor: "x", RequestID: "x"}},
-		{"messages/backend-to-connector/session.open.json", SessionOpen{}},
+		{"messages/backend-to-connector/session.open.json", SessionOpen{FitToPane: true}},
 		{"messages/backend-to-connector/session.resize.json", SessionResize{}},
 		{"messages/backend-to-connector/session.close.json", SessionClose{}},
 		{"messages/backend-to-connector/sessions.list.json", struct{}{}},
 		{"messages/connector-to-backend/session.opened.json", SessionOpened{}},
 		{"messages/connector-to-backend/session.closed.json", SessionClosed{}},
 		{"messages/connector-to-backend/sessions.list.result.json", SessionsListResult{}},
+		// Schemi 0.6.0 (ADR 0409 A1.2): i comandi del terminale unico e le risposte.
+		{"messages/backend-to-connector/session.refresh.json", ChannelBody{}},
+		{"messages/backend-to-connector/session.interrupt.json", ChannelBody{}},
+		{"messages/backend-to-connector/session.buffer.json", ChannelBody{}},
+		{"messages/backend-to-connector/session.kill.json", SessionBody{}},
+		{"messages/backend-to-connector/session.rename.json", SessionRename{}},
+		{"messages/backend-to-connector/session.zoom.json", SessionZoom{On: new(bool)}},
+		{"messages/backend-to-connector/session.capture.json", SessionCapture{}},
+		{"messages/connector-to-backend/session.refresh.result.json", ChannelBody{}},
+		{"messages/connector-to-backend/session.interrupt.result.json", ChannelBody{}},
+		{"messages/connector-to-backend/session.buffer.result.json", SessionBufferResult{}},
+		{"messages/connector-to-backend/session.kill.result.json", SessionBody{}},
+		{"messages/connector-to-backend/session.rename.result.json", SessionRename{}},
+		{"messages/connector-to-backend/session.zoom.result.json", SessionZoomResult{Panes: 1}},
+		{"messages/connector-to-backend/session.capture.result.json", SessionCaptureResult{}},
 	}
 	for _, c := range cases {
 		if c.value == nil {
@@ -153,7 +168,20 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if fmt.Sprint(defs["agentState"].(map[string]any)["enum"]) != fmt.Sprint(AgentStates) {
 		t.Errorf("stati: schema %v, Go %v", defs["agentState"], AgentStates)
 	}
-	if Version != 1 || SchemaVersion != "0.5.0" {
+	// L'enum dei range di session.capture e i tetti dei testi (ADR 0409 A1.2).
+	cp := readSchema(t, "messages/backend-to-connector/session.capture.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)
+	if fmt.Sprint(cp["range"].(map[string]any)["enum"]) != fmt.Sprint(CaptureRanges) {
+		t.Errorf("range di session.capture: schema %v, Go %v", cp["range"], CaptureRanges)
+	}
+	textMax := func(rel string) int {
+		p := readSchema(t, rel)["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)
+		return int(p["text"].(map[string]any)["maxLength"].(float64))
+	}
+	if textMax("messages/connector-to-backend/session.capture.result.json") != MaxCaptureBytes ||
+		textMax("messages/connector-to-backend/session.buffer.result.json") != MaxBufferBytes {
+		t.Error("tetti dei testi: schema e Go divergono")
+	}
+	if Version != 1 || SchemaVersion != "0.6.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }
@@ -253,5 +281,53 @@ func TestDecodeSessionOpen(t *testing.T) {
 	}
 	if err := DecodeSessionsList([]byte(`{"x":1}`)); err == nil {
 		t.Error("sessions.list con campi accettato")
+	}
+}
+
+// Decodifica dei comandi 0.6.0 (ADR 0409 A1.2): oggetti chiusi, nomi con la regola, range nell'enum.
+func TestDecodeComandiZeroSei(t *testing.T) {
+	if o, err := DecodeSessionOpen([]byte(`{"channel":1,"session":"a","create":false,"mode":"view","cols":80,"rows":24,"fitToPane":true}`)); err != nil || !o.FitToPane {
+		t.Fatalf("fitToPane: %+v %v", o, err)
+	}
+	if o, _ := DecodeSessionOpen([]byte(`{"channel":1,"session":"a","create":false,"mode":"view","cols":80,"rows":24}`)); o.FitToPane {
+		t.Error("fitToPane assente deve valere false (backend 0.5.0)")
+	}
+	if b, err := DecodeChannelBody(TypeSessionRefresh, []byte(`{"channel":3}`)); err != nil || b.Channel != 3 {
+		t.Fatalf("canale: %+v %v", b, err)
+	}
+	for _, bad := range []string{`{}`, `{"channel":-1}`, `{"channel":1,"x":1}`} {
+		if _, err := DecodeChannelBody(TypeSessionBuffer, []byte(bad)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	if _, err := DecodeSessionKill([]byte(`{"session":"-x"}`)); !errors.Is(err, ErrSessionName) {
+		t.Errorf("kill fuori regola: %v", err)
+	}
+	if _, err := DecodeSessionRename([]byte(`{"session":"a","name":"b c"}`)); !errors.Is(err, ErrSessionName) {
+		t.Errorf("rename verso un nome fuori regola: %v", err)
+	}
+	if _, err := DecodeSessionRename([]byte(`{"session":"a"}`)); !errors.Is(err, ErrInvalid) {
+		t.Errorf("rename senza name: %v", err)
+	}
+	if z, err := DecodeSessionZoom([]byte(`{"session":"a"}`)); err != nil || z.On != nil {
+		t.Errorf("zoom senza on (inverti): %+v %v", z, err)
+	}
+	if z, err := DecodeSessionZoom([]byte(`{"session":"a","on":false}`)); err != nil || z.On == nil || *z.On {
+		t.Errorf("zoom on=false: %+v %v", z, err)
+	}
+	for _, r := range CaptureRanges {
+		if c, err := DecodeSessionCapture([]byte(`{"session":"a","range":"` + r + `"}`)); err != nil || c.Range != r {
+			t.Errorf("range %s: %+v %v", r, c, err)
+		}
+	}
+	for _, bad := range []string{`{"session":"a","range":"all"}`, `{"session":"a"}`, `{"session":"a","range":"screen","x":1}`} {
+		if _, err := DecodeSessionCapture([]byte(bad)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	// Buffer assente: text è null, non una stringa vuota.
+	raw, _ := json.Marshal(SessionBufferResult{Channel: 1})
+	if string(raw) != `{"channel":1,"text":null}` {
+		t.Errorf("buffer assente: %s", raw)
 	}
 }

@@ -218,3 +218,56 @@ func TestSenzaTerminaleTypeUnknown(t *testing.T) {
 	}
 	_ = context.Background()
 }
+
+// Schemi 0.6.0 dal capo all'altro (ADR 0409 A1.2): il connettore dichiara 0.6.0 nell'header, e i comandi
+// del terminale unico tornano al backend come <tipo>.result per re attraverso la connessione vera.
+func TestTerminaleComandiZeroSei(t *testing.T) {
+	tr := newTermRig(t, nil)
+	if got := tr.s.DeclaredSchemas(); len(got) == 0 || got[len(got)-1] != "0.6.0" {
+		t.Fatalf("header X-MonsterTerminal-Schema: %v, atteso 0.6.0", got)
+	}
+	if _, err := tr.tmux("new-session", "-d", "-s", "uno", "-x", "130", "-y", "35"); err != nil {
+		t.Fatal(err)
+	}
+	id := tr.send(t, protocol.TypeSessionOpen, protocol.SessionOpen{Channel: 1, Session: "uno", Mode: protocol.ModeInteract, Cols: 80, Rows: 24, FitToPane: true})
+	env := tr.reply(t, id)
+	var op protocol.SessionOpened
+	_ = json.Unmarshal(env.Body, &op)
+	if env.Type != protocol.TypeSessionOpened || op.Cols != 130 || op.Rows != 36 {
+		t.Fatalf("fitToPane: %s %s", env.Type, env.Body)
+	}
+	expect := func(typ string, body any, want string) protocol.Envelope {
+		t.Helper()
+		env := tr.reply(t, tr.send(t, typ, body))
+		if env.Type != want {
+			t.Fatalf("%s: risposta %s %s, attesa %s", typ, env.Type, env.Body, want)
+		}
+		return env
+	}
+	expect(protocol.TypeSessionRefresh, protocol.ChannelBody{Channel: 1}, protocol.TypeSessionRefreshResult)
+	expect(protocol.TypeSessionInterrupt, protocol.ChannelBody{Channel: 1}, protocol.TypeSessionInterruptResult)
+	expect(protocol.TypeSessionBuffer, protocol.ChannelBody{Channel: 1}, protocol.TypeSessionBufferResult)
+	expect(protocol.TypeSessionZoom, protocol.SessionZoom{Session: "uno"}, protocol.TypeSessionZoomResult)
+	if err := tr.s.SendInput(tr.id, 1, []byte("echo segno-$((6*7))\r")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "segno nella cattura", func() bool {
+		env := tr.reply(t, tr.send(t, protocol.TypeSessionCapture, protocol.SessionCapture{Session: "uno", Range: "screen"}))
+		var c protocol.SessionCaptureResult
+		_ = json.Unmarshal(env.Body, &c)
+		return strings.Contains(c.Text, "segno-42")
+	})
+	expect(protocol.TypeSessionRename, protocol.SessionRename{Session: "uno", Name: "due"}, protocol.TypeSessionRenameResult)
+	expect(protocol.TypeSessionKill, protocol.SessionBody{Session: "due"}, protocol.TypeSessionKillResult)
+	eventually(t, "session.closed session-ended al backend", func() bool {
+		for _, c := range tr.s.Closed(tr.id) {
+			if c.Channel == 1 && c.Reason == protocol.ClosedSessionEnded {
+				return true
+			}
+		}
+		return false
+	})
+	if code := errCode(tr.reply(t, tr.send(t, protocol.TypeSessionKill, protocol.SessionBody{Session: "due"}))); code != protocol.CodeSessionNotFound {
+		t.Fatalf("kill ripetuto: %q", code)
+	}
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.6.0/messages/connector-to-backend/session.kill.result.json",
+  "title": "session.kill.result",
+  "description": "Sessione chiusa (ADR 0409 A1.2, schemi 0.6.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.kill.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "$ref": "../../common.json#/$defs/sessionName"
+        }
+      },
+      "required": [
+        "session"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}
