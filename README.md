@@ -9,7 +9,7 @@ anche quando il collegamento cade.
 > giornale degli eventi con conferme del backend, canali del terminale sulle sessioni tmux, stati degli
 > agenti AI (Claude Code con hook, livello generico con timer di inattività), richieste di permesso con
 > risposta dalla card (§2.12). Eventi prodotti: `connector.restarted` e `agent.state`; messaggi fuori dal
-> giornale: `request.context`, `request.respond.result`. Non ci sono ancora catalogo né aggiornamenti. Schemi del protocollo 0.6.0.
+> giornale: `request.context`, `request.respond.result`. Non ci sono ancora catalogo né aggiornamenti. Schemi del protocollo 0.7.0.
 
 ## Uso
 
@@ -63,7 +63,16 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   `session.buffer` (l'ultimo paste-buffer se ha al più 15 secondi, altrimenti `null`), `session.kill`,
   `session.rename` (`SESSION_EXISTS` se il nome è in uso), `session.zoom` (imposta lo stato o, senza
   `on`, lo inverte; con un solo pane non fa nulla) e `session.capture` (`screen`, `view`, `last200`,
-  `last1000`, al più 256 KiB, oltre `CAPTURE_TOO_LARGE`). Nessuno esegue un comando arbitrario (§1.6). Output in frame
+  `last1000`, al più 256 KiB, oltre `CAPTURE_TOO_LARGE`). Nessuno esegue un comando arbitrario (§1.6).
+- **DragMeHere** (schemi 0.7.0, ADR 0409 A1.5): i file dal browser arrivano a blocchi (`file.put`,
+  al più 192 KiB per blocco, 50 MiB per file) in una cartella **esistente** della home dell'utente di
+  servizio, scelta con `dir.list` (sola lettura, solo nomi di cartelle). Il percorso segue una regola
+  chiusa (niente `..`, assoluti o nomi nascosti) e si apre cartella per cartella senza seguire i
+  symlink: un link lungo il cammino è `PATH_INVALID`. Si scrive in `.mt-<transferId>.part` con modo
+  0644 (mai bit di esecuzione) e si rinomina in modo atomico solo dopo lo sha256 del file intero;
+  senza `overwrite` un file già presente, anche comparso durante il trasferimento, non si sovrascrive.
+  Al più 4 trasferimenti alla volta, 60 secondi d'inattività, `file.cancel` dal backend, spazio libero
+  controllato prima di scrivere; alla caduta della connessione i trasferimenti aperti si annullano. Output in frame
   da al massimo 64 KiB, accorpato per 5 ms e dosato col resto dei messaggi; oltre 4 MiB in coda i
   canali smettono di leggere da tmux finché la coda non scende sotto 1 MiB. Allo spegnimento il
   backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host. Limiti della
@@ -116,7 +125,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Riferimenti
 
-- Schemi del protocollo: [`schemas/0.6.0/`](schemas/0.6.0/README.md) (fonte unica del contratto; le
+- Schemi del protocollo: [`schemas/0.7.0/`](schemas/0.7.0/README.md) (fonte unica del contratto; le
   versioni precedenti restano nelle loro cartelle).
 - **Documentazione interna.** Il codice e i commenti citano per numero le decisioni architetturali
   (ADR 0409 il connettore, ADR 0410 gli agenti AI e il catalogo) e per sezione (`§1.x`, `§2.x`) la

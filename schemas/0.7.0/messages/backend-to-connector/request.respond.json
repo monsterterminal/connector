@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/backend-to-connector/request.respond.json",
+  "title": "request.respond",
+  "description": "Risposta di un utente a una richiesta dell'agente (§2.9 punto 3). Dalla 0.5.0 porta le risposte per domanda (§2.14).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "request.respond"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "answer": {
+          "enum": [
+            "approva",
+            "nega",
+            "testo"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "answers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "description": "Una risposta per domanda, nello stesso ordine di request.context.questions (spec §2.14): solo con answer «testo». Opzionale: un connettore fino alla 0.4.0 lo ignora e consegna il solo text.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "question",
+              "text"
+            ]
+          }
+        }
+      },
+      "required": [
+        "requestId",
+        "answer"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "answer": {
+                "const": "testo"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "text"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "text"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

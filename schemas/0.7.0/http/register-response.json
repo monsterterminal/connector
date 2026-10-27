@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/http/register-response.json",
+  "title": "POST /v1/register — risposta 201",
+  "description": "Token dell'host permanente, mostrato una sola volta (§1.3).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "hostId": {
+      "$ref": "../common.json#/$defs/uuid"
+    },
+    "hostToken": {
+      "type": "string",
+      "pattern": "^mth_[A-Za-z0-9_-]{43,}$",
+      "description": "almeno 256 bit casuali in base64url"
+    },
+    "tenantLabel": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "protocol": {
+      "$ref": "../common.json#/$defs/protocol"
+    }
+  },
+  "required": [
+    "hostId",
+    "hostToken",
+    "tenantLabel",
+    "protocol"
+  ]
+}

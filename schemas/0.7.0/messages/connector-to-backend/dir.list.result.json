@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/connector-to-backend/dir.list.result.json",
+  "title": "dir.list.result",
+  "description": "Nomi delle cartelle, ordinati, senza nascoste né symlink, al più 500 (ADR 0409 A1.5, schemi 0.7.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "dir.list.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "../../common.json#/$defs/homePath"
+        },
+        "dirs": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "../../common.json#/$defs/pathSegment"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "dirs",
+        "truncated"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}

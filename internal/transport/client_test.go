@@ -320,8 +320,8 @@ func TestAbbonamentoMancanteAttendeERiaggancia(t *testing.T) {
 	s.AllowBilling()
 	waitWelcome(t, r)
 	for i, v := range s.DeclaredSchemas() {
-		if v != "0.6.0" {
-			t.Fatalf("upgrade %d senza X-MonsterTerminal-Schema 0.6.0: %q", i, v)
+		if v != "0.7.0" {
+			t.Fatalf("upgrade %d senza X-MonsterTerminal-Schema 0.7.0: %q", i, v)
 		}
 	}
 }

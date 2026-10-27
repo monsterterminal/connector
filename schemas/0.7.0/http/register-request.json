@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/http/register-request.json",
+  "title": "POST /v1/register — corpo",
+  "description": "Registrazione dell'host con il token di installazione (§1.3). Il tenant non compare: viene dal token.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "machineId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "contenuto di /etc/machine-id"
+    },
+    "hostname": {
+      "type": "string",
+      "maxLength": 253
+    },
+    "os": {
+      "$ref": "../common.json#/$defs/os"
+    },
+    "distro": {
+      "$ref": "../common.json#/$defs/distro"
+    },
+    "distroVersion": {
+      "type": "string",
+      "maxLength": 32
+    },
+    "arch": {
+      "$ref": "../common.json#/$defs/arch"
+    },
+    "connectorVersion": {
+      "$ref": "../common.json#/$defs/semver"
+    },
+    "runAsUser": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+    },
+    "runAsRoot": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "machineId",
+    "hostname",
+    "os",
+    "distro",
+    "distroVersion",
+    "arch",
+    "connectorVersion",
+    "runAsUser",
+    "runAsRoot"
+  ]
+}

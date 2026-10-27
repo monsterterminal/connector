@@ -1,5 +1,28 @@
 # Changelog
 
+## Schemi 0.7.0 — 2026-10-27
+
+- Solo aggiunte rispetto a 0.6.0 (protocollo sempre 1), ADR 0409 A1.5 (DragMeHere sugli host):
+  `file.put` (blocchi in sequenza: `transferId`, `path`, `filename`, `size` ≤ 50 MiB, `sha256`,
+  `overwrite` facoltativo, `chunkIndex`, `totalChunks`, `data` base64 ≤ 262144 caratteri), `file.cancel`,
+  `dir.list`, con le risposte per `re`; in `common.json` le definizioni `pathSegment`, `homePath` e
+  `fileName`. Codici di `error` nuovi: `PATH_INVALID`, `DIR_NOT_FOUND`, `FILE_EXISTS`,
+  `FILE_TOO_LARGE`, `DISK_FULL`, `TRANSFER_LIMIT`, `TRANSFER_UNKNOWN`, `CHECKSUM_MISMATCH`,
+  `PROTOCOL_ERROR`.
+
+## Connettore — 2026-10-27 (non rilasciato, dopo la v0.4.0)
+
+- DragMeHere sugli host (ADR 0409 A1.5): ricevitore `internal/files`. Percorsi risolti dalla home con
+  `openat` e `O_NOFOLLOW` (un symlink è `PATH_INVALID`), temporaneo `.mt-<transferId>.part` aperto con
+  `O_EXCL` e modo 0644, sha256 verificato all'ultimo blocco e rinomina atomica (`RENAME_NOREPLACE`
+  senza `overwrite`, quindi `FILE_EXISTS` anche se il file compare durante il trasferimento), al più 4
+  trasferimenti, 60 secondi d'inattività, spazio libero controllato col primo blocco (`DISK_FULL`),
+  annullamento alla caduta della connessione. `dir.list` elenca solo le cartelle visibili, senza
+  symlink, ordinate, al più 500. Senza una home leggibile il ricevitore non parte e il backend riceve
+  `TYPE_UNKNOWN`.
+- Gli schemi dichiarati con `X-MonsterTerminal-Schema` diventano 0.7.0: il backend manda DragMeHere solo
+  da 0.7.0, i comandi di sessione da 0.6.0.
+
 ## v0.4.0 — 2026-10-27
 
 Terzo rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli

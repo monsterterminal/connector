@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/files"
 	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/terminal"
 )
@@ -35,6 +36,14 @@ type Terminal interface {
 // request.context e request.respond.result in uscita. nil = nessuna richiesta.
 type Requests interface {
 	Attach(out agents.Out)
+	Handle(env protocol.Envelope) bool
+	Detach()
+}
+
+// Files riceve i file di DragMeHere (schemi 0.7.0, ADR 0409 A1.5): file.put, file.cancel, dir.list.
+// nil = nessun ricevitore.
+type Files interface {
+	Attach(out files.Out)
 	Handle(env protocol.Envelope) bool
 	Detach()
 }

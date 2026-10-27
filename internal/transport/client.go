@@ -105,6 +105,8 @@ type Config struct {
 	Terminal Terminal
 	// Requests gestisce le richieste dell'agente (§2.9, §2.12); nil = nessuna richiesta.
 	Requests Requests
+	// Files riceve i file di DragMeHere (ADR 0409 A1.5); nil = nessun ricevitore.
+	Files Files
 	// Coda dell'output del terminale: soglie della contropressione e accorpamento (§1.7).
 	OutputHighWater, OutputLowWater int
 	OutputFlushDelay                time.Duration
@@ -346,6 +348,12 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		defer cfg.Requests.Detach()
 	}
 
+	if cfg.Files != nil {
+		// Alla caduta i trasferimenti aperti si annullano: il backend li ritenta da capo.
+		cfg.Files.Attach(&termOut{ctx: sctx, cfg: cfg, w: w})
+		defer cfg.Files.Detach()
+	}
+
 	st := newSyncState()
 	sendErr := make(chan error, 1)
 	if cfg.Events != nil {
@@ -396,6 +404,9 @@ func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, d
 		return nil
 	}
 	if cfg.Requests != nil && cfg.Requests.Handle(env) {
+		return nil
+	}
+	if cfg.Files != nil && cfg.Files.Handle(env) {
 		return nil
 	}
 	switch env.Type {

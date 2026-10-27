@@ -19,7 +19,7 @@ import (
 const Version = 1
 
 // SchemaVersion è la versione degli schemi JSON che questo codice implementa (§1.19).
-const SchemaVersion = "0.6.0"
+const SchemaVersion = "0.7.0"
 
 // HeaderSchema dichiara al backend la versione degli schemi, su POST /v1/register e sull'upgrade
 // di GET /v1 (§1.15, ADR 0418 D5). Il backend decide da QUESTO header, chiamata per chiamata, se la

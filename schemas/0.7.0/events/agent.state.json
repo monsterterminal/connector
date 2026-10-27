@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/events/agent.state.json",
+  "title": "agent.state",
+  "description": "Stato di un agente in una sessione (§1.8). Schema del campo data del messaggio event.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "session": {
+      "$ref": "../common.json#/$defs/sessionName"
+    },
+    "agent": {
+      "$ref": "../common.json#/$defs/agentId"
+    },
+    "state": {
+      "$ref": "../common.json#/$defs/agentState"
+    },
+    "source": {
+      "enum": [
+        "hook",
+        "output-pattern",
+        "idle-timer"
+      ]
+    },
+    "waitingFor": {
+      "enum": [
+        "permesso",
+        "domanda",
+        "sconosciuto"
+      ],
+      "description": "solo con state attende-input (§2.9)"
+    },
+    "requestId": {
+      "$ref": "../common.json#/$defs/uuid",
+      "description": "richiesta aperta dall'agente, solo con attende-input (§2.9)"
+    }
+  },
+  "required": [
+    "session",
+    "agent",
+    "state",
+    "source"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "not": {
+              "const": "attende-input"
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "waitingFor"
+              ]
+            },
+            {
+              "required": [
+                "requestId"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
