@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.6.0/messages/connector-to-backend/session.capture.result.json",
+  "title": "session.capture.result",
+  "description": "Testo catturato, al più 256 KiB in UTF-8; oltre, error CAPTURE_TOO_LARGE (ADR 0409 A1.2, schemi 0.6.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.capture.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "$ref": "../../common.json#/$defs/sessionName"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 262144
+        }
+      },
+      "required": [
+        "session",
+        "text"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}

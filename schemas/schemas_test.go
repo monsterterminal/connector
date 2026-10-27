@@ -5,9 +5,11 @@ package schemas
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -15,8 +17,10 @@ import (
 
 // Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12), 0.2.0 (aperta il 2026-10-16,
 // spec §1.15), 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context) e 0.4.0 (aperta il
-// 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json). Ogni test gira su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0"}
+// 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json), 0.5.0 (2026-10-19, ADR 0410 A2: le
+// domande dell'agente) e 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico). Ogni test gira
+// su ognuna.
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -67,6 +71,19 @@ var wantMessages = map[string]map[string][]string{
 		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "request.respond",
 			"session.close", "session.config", "session.open", "session.resize", "sessions.list", "update.available",
 			"welcome"},
+	},
+	// 0.6.0 (2026-10-27, ADR 0409 A1.2): fitToPane in session.open e sette comandi del terminale, ognuno
+	// con la sua risposta per re.
+	"0.6.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error", "event", "hello",
+			"request.closed", "request.context", "request.respond.result", "session.buffer.result",
+			"session.capture.result", "session.closed", "session.interrupt.result", "session.kill.result",
+			"session.opened", "session.refresh.result", "session.rename.result", "session.zoom.result",
+			"sessions.list.result", "update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "request.respond",
+			"session.buffer", "session.capture", "session.close", "session.config", "session.interrupt", "session.kill",
+			"session.open", "session.refresh", "session.rename", "session.resize", "session.zoom", "sessions.list",
+			"update.available", "welcome"},
 	},
 }
 
@@ -473,6 +490,101 @@ func TestZeroCinqueEstendeZeroQuattro(t *testing.T) {
 	}
 	if len(cur) != len(old)+1 {
 		t.Errorf("0.5.0 aggiunge %d file, atteso 1", len(cur)-len(old))
+	}
+}
+
+// TestZeroSeiEstendeZeroCinque: la 0.6.0 non toglie nulla alla 0.5.0 e aggiunge solo ciò che ADR 0409
+// A1.2 prevede: fitToPane (opzionale) in session.open e i sette comandi del terminale con le risposte.
+// Ogni altro file resta byte per byte uguale; ogni richiesta ha la sua risposta che esige re; i messaggi
+// per canale portano channel, quelli per sessione session col nome della regola (§1.7).
+func TestZeroSeiEstendeZeroCinque(t *testing.T) {
+	old, cur := loadAll(t, "0.5.0"), loadAll(t, "0.6.0")
+	props := func(n any) map[string]any {
+		m, _ := n.(map[string]any)
+		p, _ := m["properties"].(map[string]any)
+		return p
+	}
+	bodyOf := func(doc map[string]any) map[string]any { b, _ := props(doc)["body"].(map[string]any); return b }
+	list := func(n any) []string {
+		var out []string
+		r, _ := n.([]any)
+		for _, k := range r {
+			out = append(out, k.(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	const open = "messages/backend-to-connector/session.open.json"
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.6.0", rel)
+			continue
+		}
+		if rel == open {
+			continue
+		}
+		if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+			t.Errorf("%s: 0.6.0 cambia un file che doveva restare uguale alla 0.5.0", rel)
+		}
+	}
+	ob, cb := bodyOf(old[open]), bodyOf(cur[open])
+	if fmt.Sprint(list(ob["required"])) != fmt.Sprint(list(cb["required"])) {
+		t.Error("session.open: 0.6.0 cambia i campi obbligatori")
+	}
+	for k := range props(ob) {
+		if _, ok := props(cb)[k]; !ok {
+			t.Errorf("session.open: campo %s sparito", k)
+		}
+	}
+	if f, _ := props(cb)["fitToPane"].(map[string]any); f == nil || f["type"] != "boolean" || len(props(cb)) != len(props(ob))+1 {
+		t.Errorf("session.open 0.6.0: atteso il solo campo nuovo fitToPane booleano, trovato %v", props(cb))
+	}
+	perCanale := map[string]bool{"refresh": true, "interrupt": true, "buffer": true}
+	cmds := []string{"buffer", "capture", "interrupt", "kill", "refresh", "rename", "zoom"}
+	for _, cmd := range cmds {
+		req := cur["messages/backend-to-connector/session."+cmd+".json"]
+		res := cur["messages/connector-to-backend/session."+cmd+".result.json"]
+		if req == nil || res == nil {
+			t.Errorf("session.%s: manca la richiesta o la risposta", cmd)
+			continue
+		}
+		key := "session"
+		if perCanale[cmd] {
+			key = "channel"
+		}
+		want := "../../common.json#/$defs/sessionName"
+		if key == "channel" {
+			want = "../../common.json#/$defs/channel"
+		}
+		for _, doc := range []map[string]any{req, res} {
+			f, _ := props(bodyOf(doc))[key].(map[string]any)
+			if f == nil || f["$ref"] != want || !slices.Contains(list(bodyOf(doc)["required"]), key) {
+				t.Errorf("session.%s: %s obbligatorio con %s", cmd, key, want)
+			}
+		}
+		if !slices.Contains(list(res["required"]), "re") || slices.Contains(list(req["required"]), "re") {
+			t.Errorf("session.%s: re obbligatorio nella sola risposta", cmd)
+		}
+	}
+	rng, _ := props(bodyOf(cur["messages/backend-to-connector/session.capture.json"]))["range"].(map[string]any)
+	if fmt.Sprint(rng["enum"]) != "[screen view last200 last1000]" {
+		t.Errorf("session.capture range: %v, atteso l'enum di parseCaptureRange (screen view last200 last1000)", rng["enum"])
+	}
+	txt, _ := props(bodyOf(cur["messages/connector-to-backend/session.capture.result.json"]))["text"].(map[string]any)
+	if txt["maxLength"] != float64(256<<10) {
+		t.Errorf("session.capture.result text: maxLength %v, atteso 256 KiB", txt["maxLength"])
+	}
+	buf, _ := props(bodyOf(cur["messages/connector-to-backend/session.buffer.result.json"]))["text"].(map[string]any)
+	if fmt.Sprint(buf["type"]) != "[string null]" || buf["maxLength"] != float64(64<<10) {
+		t.Errorf("session.buffer.result text: %v, atteso string|null al più 64 KiB", buf)
+	}
+	zoom := bodyOf(cur["messages/backend-to-connector/session.zoom.json"])
+	if fmt.Sprint(list(zoom["required"])) != "[session]" {
+		t.Errorf("session.zoom: on è facoltativo (assente = inverti), required %v", zoom["required"])
+	}
+	if len(cur) != len(old)+2*len(cmds) {
+		t.Errorf("0.6.0 aggiunge %d file, attesi %d", len(cur)-len(old), 2*len(cmds))
 	}
 }
 

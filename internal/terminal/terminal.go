@@ -8,7 +8,8 @@
 // del backend.
 //
 // Il protocollo non esegue comandi sull'host (§1.6): gli unici comandi tmux lanciati sono quelli di
-// questo file, con argomenti fissi e il nome di sessione già validato dalla regola dei nomi.
+// questo file e di commands.go (schemi 0.6.0), con argomenti fissi e il nome di sessione già validato
+// dalla regola dei nomi.
 package terminal
 
 import (
@@ -171,6 +172,20 @@ func (m *Manager) Handle(env protocol.Envelope) bool {
 			return true
 		}
 		m.send(protocol.TypeSessionsListResult, env.ID, protocol.SessionsListResult{Sessions: m.listSessions()})
+	case protocol.TypeSessionRefresh:
+		m.handleRefresh(env)
+	case protocol.TypeSessionInterrupt:
+		m.handleInterrupt(env)
+	case protocol.TypeSessionBuffer:
+		m.handleBuffer(env)
+	case protocol.TypeSessionKill:
+		m.handleKill(env)
+	case protocol.TypeSessionRename:
+		m.handleRename(env)
+	case protocol.TypeSessionZoom:
+		m.handleZoom(env)
+	case protocol.TypeSessionCapture:
+		m.handleCapture(env)
 	default:
 		return false
 	}
@@ -270,13 +285,23 @@ func (m *Manager) handleOpen(env protocol.Envelope) {
 			return
 		}
 	}
+	cols, rows := o.Cols, o.Rows
+	if o.FitToPane {
+		// Specchio largo (schemi 0.6.0): il canale nasce con le dimensioni della finestra tmux, e
+		// session.opened le dichiara. Se non si leggono si resta su quelle del client.
+		if fc, fr, err := m.fitSize(o.Session); err == nil {
+			cols, rows = fc, fr
+		} else {
+			m.cfg.Logger.Warn("fitToPane: dimensioni della finestra non lette, uso quelle del client", "errore", err.Error())
+		}
+	}
 	args := []string{"attach-session"}
 	if o.Mode == protocol.ModeView {
 		args = append(args, "-r")
 	}
 	args = append(args, "-t", target(o.Session))
 	cmd := m.tmux(args...)
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(o.Cols), Rows: uint16(o.Rows)})
+	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	if err != nil {
 		m.reply(env.ID, protocol.CodeSessionNotFound, "tmux non avviabile: "+err.Error())
 		return
@@ -287,7 +312,7 @@ func (m *Manager) handleOpen(env protocol.Envelope) {
 	m.channels[o.Channel] = c
 	delete(m.unknownLog, o.Channel)
 	m.mu.Unlock()
-	m.send(protocol.TypeSessionOpened, env.ID, protocol.SessionOpened{Channel: o.Channel, Cols: o.Cols, Rows: o.Rows})
+	m.send(protocol.TypeSessionOpened, env.ID, protocol.SessionOpened{Channel: o.Channel, Cols: cols, Rows: rows})
 	go m.pump(c, out)
 }
 
@@ -332,7 +357,7 @@ func (m *Manager) closedReason(c *channel, werr error) string {
 	var ee *exec.ExitError
 	exited := werr == nil || (errors.As(werr, &ee) && ee.Exited())
 	switch {
-	case m.hasSession(c.session):
+	case m.hasSession(m.sessionOf(c)):
 		return protocol.ClosedError
 	case exited:
 		return protocol.ClosedSessionEnded
