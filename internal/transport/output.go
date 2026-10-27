@@ -40,7 +40,7 @@ type Requests interface {
 	Detach()
 }
 
-// Files riceve i file di DragMeHere (schemi 0.7.0, ADR 0409 A1.5): file.put, file.cancel, dir.list.
+// Files riceve i file di DragMeHere (schemi 0.7.0, ADR 0409 A1.5): file.put e file.cancel verso ~/dragmehere.
 // nil = nessun ricevitore.
 type Files interface {
 	Attach(out files.Out)

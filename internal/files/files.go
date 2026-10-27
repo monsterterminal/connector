@@ -1,10 +1,12 @@
 // Package files riceve i file di DragMeHere sugli host del connettore, schemi 0.7.0 (ADR 0409 A1.5).
 //
-// Un file arriva dal backend a blocchi in sequenza (file.put) e finisce in una cartella ESISTENTE della
-// home dell'utente di servizio. Le garanzie, tutte qui e non nel backend:
-//   - il percorso segue una regola chiusa (protocol.IsHomePath) e si risolve sul disco cartella per
-//     cartella con openat e O_NOFOLLOW a partire dalla home: un symlink lungo il cammino è PATH_INVALID,
-//     quindi nessun link nella home porta fuori;
+// Un file arriva dal backend a blocchi in sequenza (file.put) e finisce SEMPRE in ~/dragmehere, la
+// cartella di DragMeHere nella home dell'utente di servizio, o in una sua sottocartella di un solo
+// livello scritta dall'utente (decisione BOSS 2026-10-27: niente navigazione delle cartelle). Le
+// garanzie, tutte qui e non nel backend:
+//   - la sottocartella segue la regola dei nomi (protocol.IsDropSubdir); ~/dragmehere e la
+//     sottocartella si aprono con openat e O_NOFOLLOW dalla home e si creano (0755) se mancano: se al
+//     loro posto c'è un file o un symlink è PATH_INVALID, quindi nessun link porta fuori;
 //   - si scrive in un temporaneo `.mt-<transferId>.part` nella stessa cartella, aperto con O_EXCL, modo
 //     0644: mai bit di esecuzione, proprietario l'utente di servizio;
 //   - all'ultimo blocco si verifica lo sha256 del file intero e si rinomina in modo atomico; senza
@@ -12,7 +14,7 @@
 //   - al più 4 trasferimenti vivi, 60 secondi d'inattività al massimo, e alla caduta della connessione
 //     i trasferimenti aperti si annullano: in ogni caso il temporaneo si rimuove.
 //
-// Nessun messaggio esegue nulla: dir.list legge solo i nomi delle cartelle.
+// Nessun messaggio esegue nulla.
 package files
 
 import (
@@ -24,7 +26,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -52,7 +53,7 @@ type Config struct {
 type transfer struct {
 	id        string
 	dirFD     int
-	dirPath   string // percorso relativo alla home, per la risposta
+	dirPath   string // sottocartella di ~/dragmehere, per la risposta
 	filename  string
 	part      string
 	file      *os.File
@@ -140,8 +141,6 @@ func (m *Manager) Handle(env protocol.Envelope) bool {
 			m.discard(t)
 		}
 		m.send(protocol.TypeFileCancelResult, env.ID, protocol.TransferBody{TransferID: c.TransferID})
-	case protocol.TypeDirList:
-		m.handleDirList(env)
 	default:
 		return false
 	}
@@ -200,36 +199,60 @@ func isSymlinkAt(dirFD int, name string) bool {
 	return syscall.Fstat(fd, &st) == nil && st.Mode&syscall.S_IFMT == syscall.S_IFLNK
 }
 
-// errNotDir: un segmento non è una cartella o non esiste.
-var errNotDir = errors.New("cartella inesistente")
-
-// openDir apre la cartella di un percorso valido della home senza seguire symlink: ogni segmento con
-// openat(O_DIRECTORY|O_NOFOLLOW) a partire dalla home. Un symlink è PATH_INVALID, una cartella che
-// manca è DIR_NOT_FOUND.
-func (m *Manager) openDir(rel string) (int, string, error) {
+// openDropDir apre ~/dragmehere o la sua sottocartella sub, creandole (0755) se mancano. Ogni livello si
+// apre con openat(O_DIRECTORY|O_NOFOLLOW) dal livello sopra: se al posto di una cartella c'è un symlink o
+// un file la risposta è PATH_INVALID, mai seguirlo.
+func (m *Manager) openDropDir(sub string) (int, error) {
 	fd, err := syscall.Open(m.cfg.Home, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {
-		return -1, protocol.CodeDirNotFound, fmt.Errorf("home %s non apribile: %w", m.cfg.Home, err)
+		return -1, fmt.Errorf("home %s non apribile: %w", m.cfg.Home, err)
 	}
-	for _, seg := range protocol.PathSegments(rel) {
-		next, err := syscall.Openat(fd, seg, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-		if err != nil {
-			// Con O_DIRECTORY|O_NOFOLLOW Linux risponde ENOTDIR (non ELOOP) anche per un symlink: si
-			// guarda cosa c'è al suo posto, senza seguirlo.
-			link := errors.Is(err, syscall.ELOOP) || isSymlinkAt(fd, seg)
-			_ = syscall.Close(fd)
-			if link {
-				return -1, protocol.CodePathInvalid, fmt.Errorf("%s: un symlink lungo il percorso", rel)
-			}
-			if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR) {
-				return -1, protocol.CodeDirNotFound, fmt.Errorf("%s: %w", rel, errNotDir)
-			}
-			return -1, protocol.CodeDirNotFound, fmt.Errorf("%s: %w", rel, err)
-		}
+	segs := []string{protocol.DropDir}
+	if sub != "" {
+		segs = append(segs, sub)
+	}
+	for _, seg := range segs {
+		next, err := openOrCreateDir(fd, seg)
 		_ = syscall.Close(fd)
+		if err != nil {
+			return -1, err
+		}
 		fd = next
 	}
-	return fd, "", nil
+	return fd, nil
+}
+
+// openOrCreateDir apre la cartella name dentro dirFD senza seguire symlink, creandola se manca.
+func openOrCreateDir(dirFD int, name string) (int, error) {
+	const flags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+	created := false
+	for attempt := 0; attempt < 2; attempt++ {
+		fd, err := syscall.Openat(dirFD, name, flags, 0)
+		if err == nil {
+			if created {
+				// 0755 anche contro un'umask stretta del servizio.
+				_ = syscall.Fchmod(fd, 0o755)
+			}
+			return fd, nil
+		}
+		if !errors.Is(err, syscall.ENOENT) {
+			// Con O_DIRECTORY|O_NOFOLLOW Linux risponde ENOTDIR (o ELOOP) sia per un symlink sia per un
+			// file: in entrambi i casi al suo posto non c'è una cartella vera.
+			kind := "un file"
+			if errors.Is(err, syscall.ELOOP) || isSymlinkAt(dirFD, name) {
+				kind = "un symlink"
+			}
+			return -1, fmt.Errorf("%s: al posto della cartella c'è %s (%v)", name, kind, err)
+		}
+		switch err := syscall.Mkdirat(dirFD, name, 0o755); {
+		case err == nil:
+			created = true
+		case !errors.Is(err, syscall.EEXIST):
+			return -1, fmt.Errorf("%s: cartella non creata: %w", name, err)
+		}
+		// Creata ora (o da qualcun altro nel frattempo): si riapre con le stesse regole.
+	}
+	return -1, fmt.Errorf("%s: cartella non apribile", name)
 }
 
 func (m *Manager) handlePut(env protocol.Envelope) {
@@ -280,9 +303,9 @@ func (m *Manager) open(re string, p protocol.FilePut) {
 		m.reply(re, protocol.CodeProtocolError, fmt.Sprintf("%d blocchi per %d byte", p.TotalChunks, p.Size))
 		return
 	}
-	dirFD, code, err := m.openDir(p.Path)
+	dirFD, err := m.openDropDir(p.Path)
 	if err != nil {
-		m.reply(re, code, err.Error())
+		m.reply(re, protocol.CodePathInvalid, err.Error())
 		return
 	}
 	fail := func(code, msg string) { _ = syscall.Close(dirFD); m.reply(re, code, msg) }
@@ -418,9 +441,9 @@ func (m *Manager) chunk(re string, t *transfer, p protocol.FilePut) {
 		_ = t.file.Close()
 		_ = syscall.Close(t.dirFD)
 	}
-	dest := t.filename
+	dest := protocol.DropDir + "/" + t.filename
 	if t.dirPath != "" {
-		dest = t.dirPath + "/" + t.filename
+		dest = protocol.DropDir + "/" + t.dirPath + "/" + t.filename
 	}
 	m.send(protocol.TypeFilePutResult, re, protocol.FilePutResult{TransferID: t.id, ChunkIndex: p.ChunkIndex,
 		Received: t.received, Done: true, Path: dest, Size: t.size, SHA256: t.sha})
@@ -444,51 +467,4 @@ func renameat2(olddirfd int, oldpath string, newdirfd int, newpath string, flags
 		return e
 	}
 	return nil
-}
-
-// handleDirList elenca le cartelle di una cartella della home: solo nomi, senza nascoste né symlink,
-// ordinati, al più 500.
-func (m *Manager) handleDirList(env protocol.Envelope) {
-	d, err := protocol.DecodeDirList(env.Body)
-	switch {
-	case errors.Is(err, protocol.ErrPathInvalid):
-		m.reply(env.ID, protocol.CodePathInvalid, "percorso fuori dalla regola")
-		return
-	case err != nil:
-		m.reply(env.ID, protocol.CodeMessageInvalid, err.Error())
-		return
-	}
-	fd, code, err := m.openDir(d.Path)
-	if err != nil {
-		m.reply(env.ID, code, err.Error())
-		return
-	}
-	f := os.NewFile(uintptr(fd), d.Path)
-	defer f.Close()
-	// Solo i nomi: Readdirnames non fa stat per percorso (ReadDir, col tipo ignoto, farebbe lstat sul
-	// nome relativo, cioè fuori dalla cartella aperta). Ogni candidato si prova con openat
-	// O_DIRECTORY|O_NOFOLLOW sulla cartella aperta: un symlink a una cartella non è una cartella.
-	names, err := f.Readdirnames(-1)
-	if err != nil {
-		m.reply(env.ID, protocol.CodeDirNotFound, "cartella non leggibile: "+err.Error())
-		return
-	}
-	dirs := []string{}
-	for _, name := range names {
-		if !protocol.IsPathSegment(name) {
-			continue
-		}
-		sub, err := syscall.Openat(fd, name, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-		if err != nil {
-			continue
-		}
-		_ = syscall.Close(sub)
-		dirs = append(dirs, name)
-	}
-	slices.Sort(dirs)
-	res := protocol.DirListResult{Path: d.Path, Dirs: dirs}
-	if len(dirs) > protocol.MaxDirsListed {
-		res.Dirs, res.Truncated = dirs[:protocol.MaxDirsListed], true
-	}
-	m.send(protocol.TypeDirListResult, env.ID, res)
 }

@@ -98,11 +98,11 @@
         "message"
       ]
     },
-    "homePath": {
+    "dragmehereDir": {
       "type": "string",
-      "maxLength": 1024,
-      "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,15}$",
-      "description": "percorso relativo alla home dell'utente di servizio, vuoto = la home; segmenti con la regola dei nomi, niente nascosti, al più 16 (ADR 0409 A1.5)"
+      "maxLength": 128,
+      "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "sottocartella di ~/dragmehere sull'host: vuoto = ~/dragmehere, altrimenti un solo segmento con la regola dei nomi; il connettore la crea se manca (ADR 0409 A1.5)"
     },
     "fileName": {
       "type": "string",
@@ -112,7 +112,7 @@
     "pathSegment": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-      "description": "segmento di un percorso della home: la regola dei nomi, niente nascosti (ADR 0409 A1.5)"
+      "description": "segmento di un percorso: la regola dei nomi, niente nascosti (ADR 0409 A1.5)"
     }
   }
 }

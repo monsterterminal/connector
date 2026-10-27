@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/backend-to-connector/file.put.json",
   "title": "file.put",
-  "description": "Un blocco di un file verso la home dell'utente di servizio: blocchi in sequenza, uno alla volta; il primo apre il trasferimento, l'ultimo verifica sha256 e rinomina. Nessuna esecuzione (ADR 0409 A1.5, schemi 0.7.0)",
+  "description": "Un blocco di un file verso ~/dragmehere (o una sua sottocartella) sull'host: blocchi in sequenza, uno alla volta; il primo apre il trasferimento e crea le cartelle che mancano, l'ultimo verifica sha256 e rinomina. Nessuna esecuzione (ADR 0409 A1.5, schemi 0.7.0)",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -26,7 +26,7 @@
           "$ref": "../../common.json#/$defs/uuid"
         },
         "path": {
-          "$ref": "../../common.json#/$defs/homePath"
+          "$ref": "../../common.json#/$defs/dragmehereDir"
         },
         "filename": {
           "$ref": "../../common.json#/$defs/fileName"

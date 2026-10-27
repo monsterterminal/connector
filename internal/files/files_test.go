@@ -1,7 +1,8 @@
 // Test del ricevitore di DragMeHere su un filesystem vero (una home temporanea). Asse A: il file arriva
 // intero e solo dove deve; asse B: codici e risposte di ADR 0409 A1.5 (file.put.result per blocco e
-// finale, PATH_INVALID, DIR_NOT_FOUND, FILE_EXISTS, FILE_TOO_LARGE, DISK_FULL, TRANSFER_LIMIT,
-// TRANSFER_UNKNOWN, CHECKSUM_MISMATCH, PROTOCOL_ERROR; temporaneo `.mt-<transferId>.part`, 0644).
+// finale, PATH_INVALID, FILE_EXISTS, FILE_TOO_LARGE, DISK_FULL, TRANSFER_LIMIT,
+// TRANSFER_UNKNOWN, CHECKSUM_MISMATCH, PROTOCOL_ERROR; sempre sotto ~/dragmehere, creata 0755 se manca;
+// temporaneo `.mt-<transferId>.part`, 0644).
 package files
 
 import (
@@ -10,7 +11,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -142,8 +142,14 @@ func (r *rig) all(u upload) string {
 	return id
 }
 
+// drop è il percorso assoluto di un file sotto ~/dragmehere.
+func (r *rig) drop(rel ...string) string {
+	return filepath.Join(append([]string{r.home, protocol.DropDir}, rel...)...)
+}
+
+// parts elenca i temporanei in ~/dragmehere/<dir>.
 func (r *rig) parts(dir string) []string {
-	entries, _ := os.ReadDir(filepath.Join(r.home, dir))
+	entries, _ := os.ReadDir(filepath.Join(r.home, protocol.DropDir, dir))
 	var out []string
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".part") {
@@ -153,103 +159,114 @@ func (r *rig) parts(dir string) []string {
 	return out
 }
 
-func TestFileInteroABlocchiConRinominaFinale(t *testing.T) {
+func TestFileInteroABlocchiInDragmehereCreataSeManca(t *testing.T) {
 	r := newRig(t, nil)
-	if err := os.MkdirAll(filepath.Join(r.home, "progetti", "demo"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	u := newUpload("progetti/demo", "foto.png", 500_000, protocol.MaxChunkBytes)
+	u := newUpload("progetti", "foto.png", 500_000, protocol.MaxChunkBytes)
 	first := r.send(protocol.TypeFilePut, u.put(0))
 	if res := r.result(first); res.Received != protocol.MaxChunkBytes || res.Done {
 		t.Fatalf("primo blocco: %+v", res)
 	}
+	// ~/dragmehere e la sottocartella nascono col primo blocco, 0755.
+	for _, d := range []string{r.drop(), r.drop("progetti")} {
+		st, err := os.Lstat(d)
+		if err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
+			t.Fatalf("%s: %v %v", d, st, err)
+		}
+	}
 	// Durante il trasferimento c'è solo il temporaneo, col nome di lunghezza fissa.
-	if p := r.parts("progetti/demo"); len(p) != 1 || p[0] != ".mt-"+u.id+".part" {
+	if p := r.parts("progetti"); len(p) != 1 || p[0] != ".mt-"+u.id+".part" {
 		t.Fatalf("temporanei %v", p)
 	}
-	if _, err := os.Stat(filepath.Join(r.home, "progetti/demo/foto.png")); err == nil {
+	if _, err := os.Stat(r.drop("progetti", "foto.png")); err == nil {
 		t.Fatal("il file finale esiste prima dell'ultimo blocco")
 	}
 	r.send(protocol.TypeFilePut, u.put(1))
-	last := r.send(protocol.TypeFilePut, u.put(2))
-	res := r.result(last)
+	res := r.result(r.send(protocol.TypeFilePut, u.put(2)))
 	sum := sha256.Sum256(u.data)
-	if !res.Done || res.Path != "progetti/demo/foto.png" || res.Size != 500_000 || res.SHA256 != hex.EncodeToString(sum[:]) || res.Received != 500_000 {
+	if !res.Done || res.Path != "dragmehere/progetti/foto.png" || res.Size != 500_000 || res.SHA256 != hex.EncodeToString(sum[:]) || res.Received != 500_000 {
 		t.Fatalf("esito finale %+v", res)
 	}
-	got, err := os.ReadFile(filepath.Join(r.home, "progetti/demo/foto.png"))
+	got, err := os.ReadFile(r.drop("progetti", "foto.png"))
 	if err != nil || string(got) != string(u.data) {
 		t.Fatalf("contenuto diverso: %v", err)
 	}
-	st, _ := os.Stat(filepath.Join(r.home, "progetti/demo/foto.png"))
+	st, _ := os.Stat(r.drop("progetti", "foto.png"))
 	if st.Mode().Perm() != 0o644 {
 		t.Fatalf("modo %v, atteso 0644 senza bit di esecuzione", st.Mode().Perm())
 	}
-	if p := r.parts("progetti/demo"); len(p) != 0 || r.m.Alive() != 0 {
+	if p := r.parts("progetti"); len(p) != 0 || r.m.Alive() != 0 {
 		t.Fatalf("restano temporanei %v o trasferimenti %d", p, r.m.Alive())
 	}
-	// Nella home stessa (path vuoto), un blocco solo.
+	// Senza sottocartella: in ~/dragmehere, un blocco solo; la home resta intatta.
 	u2 := newUpload("", "nota.txt", 10, 64)
-	if res := r.result(r.all(u2)); !res.Done || res.Path != "nota.txt" {
-		t.Fatalf("nella home: %+v", res)
+	if res := r.result(r.all(u2)); !res.Done || res.Path != "dragmehere/nota.txt" {
+		t.Fatalf("in ~/dragmehere: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(r.home, "nota.txt")); err == nil {
+		t.Fatal("un file è finito nella home invece che in ~/dragmehere")
 	}
 }
 
-func TestPercorsiFuoriRegolaESymlinkNonEscono(t *testing.T) {
-	r := newRig(t, nil)
+func TestDragmehereSymlinkOFileNonSiSegue(t *testing.T) {
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(r.home, "fuori")); err != nil {
+	// ~/dragmehere symlink verso fuori.
+	r := newRig(t, nil)
+	if err := os.Symlink(outside, filepath.Join(r.home, protocol.DropDir)); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Mkdir(filepath.Join(r.home, "dentro"), 0o755)
-	if err := os.Symlink(outside, filepath.Join(r.home, "dentro", "link")); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{"fuori", "dentro/link"} {
-		u := newUpload(path, "x.txt", 10, 64)
-		if code := r.code(r.send(protocol.TypeFilePut, u.put(0))); code != protocol.CodePathInvalid {
-			t.Errorf("%s: %q, atteso PATH_INVALID", path, code)
+	for _, sub := range []string{"", "x"} {
+		if code := r.code(r.send(protocol.TypeFilePut, newUpload(sub, "a.txt", 10, 64).put(0))); code != protocol.CodePathInvalid {
+			t.Errorf("~/dragmehere symlink, sub %q: %q", sub, code)
 		}
 	}
-	entries, _ := os.ReadDir(outside)
-	if len(entries) != 0 {
+	// ~/dragmehere è un file.
+	r2 := newRig(t, nil)
+	if err := os.WriteFile(filepath.Join(r2.home, protocol.DropDir), []byte("non sono una cartella"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := r2.code(r2.send(protocol.TypeFilePut, newUpload("", "a.txt", 10, 64).put(0))); code != protocol.CodePathInvalid {
+		t.Errorf("~/dragmehere file: %q", code)
+	}
+	// Sottocartella symlink dentro ~/dragmehere.
+	r3 := newRig(t, nil)
+	_ = os.Mkdir(r3.drop(), 0o755)
+	if err := os.Symlink(outside, r3.drop("link")); err != nil {
+		t.Fatal(err)
+	}
+	if code := r3.code(r3.send(protocol.TypeFilePut, newUpload("link", "a.txt", 10, 64).put(0))); code != protocol.CodePathInvalid {
+		t.Errorf("sottocartella symlink: %q", code)
+	}
+	// Un symlink al posto del file finale conta come esistente e non si segue.
+	if err := os.Symlink(filepath.Join(outside, "bersaglio"), r3.drop("f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if code := r3.code(r3.send(protocol.TypeFilePut, newUpload("", "f.txt", 10, 64).put(0))); code != protocol.CodeFileExists {
+		t.Errorf("symlink al posto del file: %q", code)
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Fatalf("un file è uscito dalla home attraverso un symlink: %v", entries)
 	}
-	// La regola chiusa: niente risalite, assoluti, nascosti, segmenti vuoti.
-	for _, path := range []string{"..", "../etc", "/etc", ".ssh", "dentro/../..", "a//b", "dentro/"} {
+	// La regola: vuoto o UN segmento; niente risalite, assoluti, nascosti, sottocartelle annidate.
+	for _, path := range []string{"..", "../etc", "/etc", ".ssh", "a/b", "a//b", "a/", " a"} {
 		raw := map[string]any{"transferId": protocol.NewUUID(), "path": path, "filename": "x.txt", "size": 1,
 			"sha256": strings.Repeat("0", 64), "chunkIndex": 0, "totalChunks": 1, "data": "eA=="}
-		if code := r.code(r.send(protocol.TypeFilePut, raw)); code != protocol.CodePathInvalid {
+		if code := r3.code(r3.send(protocol.TypeFilePut, raw)); code != protocol.CodePathInvalid {
 			t.Errorf("percorso %q: %q", path, code)
 		}
 	}
 	for _, name := range []string{".bashrc", "a/b", "..", ""} {
-		u := newUpload("", "x", 1, 64)
-		raw := map[string]any{"transferId": u.id, "path": "", "filename": name, "size": 1,
+		raw := map[string]any{"transferId": protocol.NewUUID(), "path": "", "filename": name, "size": 1,
 			"sha256": strings.Repeat("0", 64), "chunkIndex": 0, "totalChunks": 1, "data": "eA=="}
-		if code := r.code(r.send(protocol.TypeFilePut, raw)); code != protocol.CodePathInvalid {
+		if code := r3.code(r3.send(protocol.TypeFilePut, raw)); code != protocol.CodePathInvalid {
 			t.Errorf("nome %q: %q", name, code)
 		}
 	}
-	// Un symlink al posto del file finale conta come esistente e non si segue.
-	if err := os.Symlink(filepath.Join(outside, "bersaglio"), filepath.Join(r.home, "dentro", "f.txt")); err != nil {
-		t.Fatal(err)
-	}
-	u := newUpload("dentro", "f.txt", 10, 64)
-	if code := r.code(r.send(protocol.TypeFilePut, u.put(0))); code != protocol.CodeFileExists {
-		t.Errorf("symlink al posto del file: %q", code)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "bersaglio")); err == nil {
-		t.Fatal("il symlink è stato seguito")
-	}
 }
 
-func TestCartellaInesistenteFileEsistenteEOverwrite(t *testing.T) {
+func TestFileEsistenteOverwriteECorsa(t *testing.T) {
 	r := newRig(t, nil)
-	if code := r.code(r.send(protocol.TypeFilePut, newUpload("manca", "x.txt", 10, 64).put(0))); code != protocol.CodeDirNotFound {
-		t.Errorf("cartella inesistente: %q", code)
-	}
-	if err := os.WriteFile(filepath.Join(r.home, "c.txt"), []byte("vecchio"), 0o600); err != nil {
+	_ = os.Mkdir(r.drop(), 0o755)
+	if err := os.WriteFile(r.drop("c.txt"), []byte("vecchio"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if code := r.code(r.send(protocol.TypeFilePut, newUpload("", "c.txt", 10, 64).put(0))); code != protocol.CodeFileExists {
@@ -260,11 +277,11 @@ func TestCartellaInesistenteFileEsistenteEOverwrite(t *testing.T) {
 	if res := r.result(r.all(u)); !res.Done {
 		t.Fatalf("overwrite: %+v", res)
 	}
-	if got, _ := os.ReadFile(filepath.Join(r.home, "c.txt")); string(got) != string(u.data) {
+	if got, _ := os.ReadFile(r.drop("c.txt")); string(got) != string(u.data) {
 		t.Fatal("overwrite non ha sostituito il file")
 	}
 	// Una cartella non si sovrascrive mai.
-	_ = os.Mkdir(filepath.Join(r.home, "cartella"), 0o755)
+	_ = os.Mkdir(r.drop("cartella"), 0o755)
 	u = newUpload("", "cartella", 10, 64)
 	u.overwrite = true
 	if code := r.code(r.send(protocol.TypeFilePut, u.put(0))); code != protocol.CodePathInvalid {
@@ -273,13 +290,13 @@ func TestCartellaInesistenteFileEsistenteEOverwrite(t *testing.T) {
 	// Senza overwrite, un file comparso durante il trasferimento non si sovrascrive (RENAME_NOREPLACE).
 	u = newUpload("", "corsa.txt", 200, 100)
 	r.send(protocol.TypeFilePut, u.put(0))
-	if err := os.WriteFile(filepath.Join(r.home, "corsa.txt"), []byte("arrivato prima"), 0o600); err != nil {
+	if err := os.WriteFile(r.drop("corsa.txt"), []byte("arrivato prima"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if code := r.code(r.send(protocol.TypeFilePut, u.put(1))); code != protocol.CodeFileExists {
 		t.Errorf("file comparso nel frattempo: %q", code)
 	}
-	if got, _ := os.ReadFile(filepath.Join(r.home, "corsa.txt")); string(got) != "arrivato prima" {
+	if got, _ := os.ReadFile(r.drop("corsa.txt")); string(got) != "arrivato prima" {
 		t.Fatal("il file comparso nel frattempo è stato sovrascritto")
 	}
 	if p := r.parts(""); len(p) != 0 {
@@ -316,7 +333,7 @@ func TestSequenzaChecksumETetti(t *testing.T) {
 	if code := r.code(r.send(protocol.TypeFilePut, last)); code != protocol.CodeChecksumMismatch {
 		t.Errorf("checksum: %q", code)
 	}
-	if _, err := os.Stat(filepath.Join(r.home, "c.bin")); err == nil {
+	if _, err := os.Stat(r.drop("c.bin")); err == nil {
 		t.Error("file con checksum sbagliato rinominato")
 	}
 	// Dimensione oltre il tetto.
@@ -398,46 +415,3 @@ func TestCadutaDellaConnessioneAnnullaITrasferimenti(t *testing.T) {
 		t.Fatalf("dopo Detach: vivi %d, temporanei %v", r.m.Alive(), r.parts(""))
 	}
 }
-
-func TestDirListSoloCartelleVisibiliSenzaSymlink(t *testing.T) {
-	r := newRig(t, nil)
-	for _, d := range []string{"b", "a", ".nascosta", "con spazio", "a/dentro"} {
-		_ = os.MkdirAll(filepath.Join(r.home, d), 0o755)
-	}
-	_ = os.WriteFile(filepath.Join(r.home, "file.txt"), nil, 0o600)
-	_ = os.Symlink(filepath.Join(r.home, "a"), filepath.Join(r.home, "link-a"))
-	list := func(path string) (protocol.DirListResult, string) {
-		id := r.send(protocol.TypeDirList, protocol.DirList{Path: path})
-		if c := r.code(id); c != "" {
-			return protocol.DirListResult{}, c
-		}
-		m, _ := r.out.get(id)
-		var res protocol.DirListResult
-		_ = json.Unmarshal(m.body, &res)
-		return res, ""
-	}
-	res, code := list("")
-	if code != "" || strings.Join(res.Dirs, ",") != "a,b" || res.Truncated || res.Path != "" {
-		t.Fatalf("home: %+v %q", res, code)
-	}
-	if res, _ := list("a"); strings.Join(res.Dirs, ",") != "dentro" {
-		t.Fatalf("a: %+v", res)
-	}
-	if _, code := list("link-a"); code != protocol.CodePathInvalid {
-		t.Errorf("symlink: %q", code)
-	}
-	if _, code := list("manca"); code != protocol.CodeDirNotFound {
-		t.Errorf("inesistente: %q", code)
-	}
-	if _, code := list("../"); code != protocol.CodePathInvalid {
-		t.Errorf("risalita: %q", code)
-	}
-	for i := 0; i < protocol.MaxDirsListed+5; i++ {
-		_ = os.Mkdir(filepath.Join(r.home, "b", "d"+strings.Repeat("0", 4-len(itoa(i)))+itoa(i)), 0o755)
-	}
-	if res, _ := list("b"); len(res.Dirs) != protocol.MaxDirsListed || !res.Truncated || res.Dirs[0] != "d0000" {
-		t.Fatalf("tetto: %d voci, truncated %v", len(res.Dirs), res.Truncated)
-	}
-}
-
-func itoa(i int) string { return strconv.Itoa(i) }
