@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.0 — 2026-10-27
+
+Quarto rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
+schemi 0.7.0 e lo dichiara con `X-MonsterTerminal-Schema`. Compatibile all'indietro con un backend agli
+schemi 0.5.0 o 0.6.0: ciò che il backend non conosce non lo manda.
+
+- DragMeHere sugli host del connettore (ADR 0409 A1.5): i file trascinati nel browser arrivano in una
+  cartella esistente della home dell'utente di servizio, a blocchi, con sha256 verificato e rinomina
+  atomica; i symlink non portano fuori dalla home, nessun file nasce eseguibile, nessun messaggio
+  esegue nulla. La cartella si sceglie dall'elenco in sola lettura delle cartelle della home.
+
 ## Schemi 0.7.0 — 2026-10-27
 
 - Solo aggiunte rispetto a 0.6.0 (protocollo sempre 1), ADR 0409 A1.5 (DragMeHere sugli host):
