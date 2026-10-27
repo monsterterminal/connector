@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/backend-to-connector/session.resize.json",
+  "title": "session.resize",
+  "description": "Cambio di dimensione di un canale (§1.7)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.resize"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "$ref": "../../common.json#/$defs/channel"
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "channel",
+        "cols",
+        "rows"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

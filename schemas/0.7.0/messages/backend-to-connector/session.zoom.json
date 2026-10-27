@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/backend-to-connector/session.zoom.json",
+  "title": "session.zoom",
+  "description": "Zoom della pane attiva: con on imposta lo stato, senza on lo inverte come la rotta SSH omologa (ADR 0409 A1.2, schemi 0.6.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.zoom"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "$ref": "../../common.json#/$defs/sessionName"
+        },
+        "on": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

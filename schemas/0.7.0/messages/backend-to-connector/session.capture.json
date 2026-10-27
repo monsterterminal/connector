@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/backend-to-connector/session.capture.json",
+  "title": "session.capture",
+  "description": "Testo della pane attiva (ADR 0409 A1.2, schemi 0.6.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "session.capture"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "$ref": "../../common.json#/$defs/sessionName"
+        },
+        "range": {
+          "enum": [
+            "screen",
+            "view",
+            "last200",
+            "last1000"
+          ],
+          "description": "la forma di parseCaptureRange del backend (spec 65 §9)"
+        }
+      },
+      "required": [
+        "session",
+        "range"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

@@ -223,8 +223,8 @@ func TestSenzaTerminaleTypeUnknown(t *testing.T) {
 // del terminale unico tornano al backend come <tipo>.result per re attraverso la connessione vera.
 func TestTerminaleComandiZeroSei(t *testing.T) {
 	tr := newTermRig(t, nil)
-	if got := tr.s.DeclaredSchemas(); len(got) == 0 || got[len(got)-1] != "0.6.0" {
-		t.Fatalf("header X-MonsterTerminal-Schema: %v, atteso 0.6.0", got)
+	if got := tr.s.DeclaredSchemas(); len(got) == 0 || got[len(got)-1] != protocol.SchemaVersion {
+		t.Fatalf("header X-MonsterTerminal-Schema: %v, atteso %s", got, protocol.SchemaVersion)
 	}
 	if _, err := tr.tmux("new-session", "-d", "-s", "uno", "-x", "130", "-y", "35"); err != nil {
 		t.Fatal(err)

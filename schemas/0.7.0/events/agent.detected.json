@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/events/agent.detected.json",
+  "title": "agent.detected",
+  "description": "Agente AI rilevato sull'host (§1.8). Schema del campo data del messaggio event.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "$ref": "../common.json#/$defs/agentId"
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 1024
+    }
+  },
+  "required": [
+    "agent",
+    "version",
+    "path"
+  ]
+}

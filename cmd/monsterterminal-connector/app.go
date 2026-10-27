@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/files"
 	"github.com/monsterterminal/connector/internal/hostconf"
 	"github.com/monsterterminal/connector/internal/hostinfo"
 	"github.com/monsterterminal/connector/internal/journal"
@@ -260,6 +261,14 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	// Stati degli agenti (spec §1.21): socket degli hook di Claude Code, timer di inattività e
 	// richieste di permesso (§2.12).
 	thresholds, requests := a.startAgents(ctx, log, j, stateDir)
+	// DragMeHere (ADR 0409 A1.5): i file arrivano solo dentro la home dell'utente di servizio. Senza home
+	// leggibile il ricevitore non c'è e il backend riceve TYPE_UNKNOWN.
+	var recv transport.Files
+	if home, err := a.home(); err == nil && home != "" {
+		recv = files.New(files.Config{Home: home, Logger: log})
+	} else {
+		log.Warn("home dell'utente non trovata: DragMeHere spento su questo host", "errore", fmt.Sprint(err))
+	}
 	cfg := transport.Config{
 		URL:        "wss://" + strings.TrimPrefix(server, "https://") + "/v1",
 		Token:      tok,
@@ -268,6 +277,7 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 		Events:     j,
 		Terminal:   terminal.New(terminal.Config{Socket: a.tmuxSocket, Logger: log}),
 		Requests:   requests,
+		Files:      recv,
 		Now:        a.now,
 		Hello: func() protocol.Hello {
 			return protocol.Hello{

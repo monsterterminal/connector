@@ -18,9 +18,10 @@ import (
 // Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12), 0.2.0 (aperta il 2026-10-16,
 // spec §1.15), 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context) e 0.4.0 (aperta il
 // 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json), 0.5.0 (2026-10-19, ADR 0410 A2: le
-// domande dell'agente) e 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico). Ogni test gira
+// domande dell'agente) 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico) e 0.7.0 (2026-10-27, ADR 0409 A1.5:
+// DragMeHere sugli host). Ogni test gira
 // su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"}
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -84,6 +85,18 @@ var wantMessages = map[string]map[string][]string{
 			"session.buffer", "session.capture", "session.close", "session.config", "session.interrupt", "session.kill",
 			"session.open", "session.refresh", "session.rename", "session.resize", "session.zoom", "sessions.list",
 			"update.available", "welcome"},
+	},
+	// 0.7.0 (2026-10-27, ADR 0409 A1.5): DragMeHere sugli host, file.put, file.cancel e dir.list.
+	"0.7.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "dir.list.result", "error",
+			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
+			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
+			"session.interrupt.result", "session.kill.result", "session.opened", "session.refresh.result",
+			"session.rename.result", "session.zoom.result", "sessions.list.result", "update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "dir.list", "error", "events.ack", "file.cancel",
+			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
+			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
+			"session.zoom", "sessions.list", "update.available", "welcome"},
 	},
 }
 
@@ -585,6 +598,85 @@ func TestZeroSeiEstendeZeroCinque(t *testing.T) {
 	}
 	if len(cur) != len(old)+2*len(cmds) {
 		t.Errorf("0.6.0 aggiunge %d file, attesi %d", len(cur)-len(old), 2*len(cmds))
+	}
+}
+
+// TestZeroSetteEstendeZeroSei: la 0.7.0 non toglie nulla alla 0.6.0 e aggiunge solo ciò che ADR 0409
+// A1.5 prevede: le definizioni homePath, fileName e pathSegment in common.json e i messaggi file.put,
+// file.cancel, dir.list con le risposte. Ogni altro file resta byte per byte uguale.
+func TestZeroSetteEstendeZeroSei(t *testing.T) {
+	old, cur := loadAll(t, "0.6.0"), loadAll(t, "0.7.0")
+	props := func(n any) map[string]any {
+		m, _ := n.(map[string]any)
+		p, _ := m["properties"].(map[string]any)
+		return p
+	}
+	bodyOf := func(doc map[string]any) map[string]any { b, _ := props(doc)["body"].(map[string]any); return b }
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.7.0", rel)
+			continue
+		}
+		if rel == "common.json" {
+			od, _ := o["$defs"].(map[string]any)
+			cd, _ := c["$defs"].(map[string]any)
+			for k, v := range od {
+				if string(mustJSON(t, map[string]any{"v": v})) != string(mustJSON(t, map[string]any{"v": cd[k]})) {
+					t.Errorf("common.json: definizione %s cambiata", k)
+				}
+			}
+			for _, k := range []string{"homePath", "fileName", "pathSegment"} {
+				if cd[k] == nil {
+					t.Errorf("common.json 0.7.0 senza %s", k)
+				}
+			}
+			if len(cd) != len(od)+3 {
+				t.Errorf("common.json: %d definizioni nuove, attese 3", len(cd)-len(od))
+			}
+			continue
+		}
+		if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+			t.Errorf("%s: 0.7.0 cambia un file che doveva restare uguale alla 0.6.0", rel)
+		}
+	}
+	required := func(doc map[string]any) []string {
+		var out []string
+		r, _ := doc["required"].([]any)
+		for _, k := range r {
+			out = append(out, k.(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	for _, cmd := range []string{"file.put", "file.cancel", "dir.list"} {
+		req := cur["messages/backend-to-connector/"+cmd+".json"]
+		res := cur["messages/connector-to-backend/"+cmd+".result.json"]
+		if req == nil || res == nil {
+			t.Errorf("%s: manca la richiesta o la risposta", cmd)
+			continue
+		}
+		if !slices.Contains(required(res), "re") || slices.Contains(required(req), "re") {
+			t.Errorf("%s: re obbligatorio nella sola risposta", cmd)
+		}
+	}
+	put := props(bodyOf(cur["messages/backend-to-connector/file.put.json"]))
+	if put["size"].(map[string]any)["maximum"] != float64(50<<20) {
+		t.Errorf("file.put size: tetto %v, atteso 50 MiB", put["size"])
+	}
+	if put["data"].(map[string]any)["maxLength"] != float64(262144) {
+		t.Errorf("file.put data: %v, atteso al più 262144 caratteri base64 (192 KiB)", put["data"])
+	}
+	if slices.Contains(required(bodyOf(cur["messages/backend-to-connector/file.put.json"])), "overwrite") {
+		t.Error("file.put overwrite è facoltativo (assente = false)")
+	}
+	for _, f := range []string{"path"} {
+		if put[f].(map[string]any)["$ref"] != "../../common.json#/$defs/homePath" {
+			t.Errorf("file.put %s non usa homePath", f)
+		}
+	}
+	if len(cur) != len(old)+6 {
+		t.Errorf("0.7.0 aggiunge %d file, attesi 6", len(cur)-len(old))
 	}
 }
 

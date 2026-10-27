@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/common.json",
+  "title": "Definizioni comuni",
+  "description": "Tipi condivisi da tutti gli schemi del protocollo del connettore, versione 0.1.0.",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "UUID v4 in minuscolo"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "RFC 3339 in UTC (§1.5)"
+    },
+    "channel": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "canale del terminale, intero senza segno a 32 bit (§1.7)"
+    },
+    "sessionName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "nome di sessione tmux, stessa regola del backend (spec 65, allowlist)"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "numero progressivo dell'evento per host, senza buchi (§1.8)",
+      "maximum": 9007199254740991
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z.-]+)?$"
+    },
+    "protocol": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "versione intera del protocollo (§1.15)"
+    },
+    "os": {
+      "enum": [
+        "linux"
+      ]
+    },
+    "arch": {
+      "enum": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "distro": {
+      "enum": [
+        "debian",
+        "ubuntu",
+        "rhel"
+      ],
+      "description": "famiglie supportate (ADR 0409 D1). Derivate Red Hat si riportano come rhel"
+    },
+    "agentId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "description": "identificativo dell'agente, es. claude-code, codex, opencode, generic"
+    },
+    "agentState": {
+      "enum": [
+        "lavora",
+        "attende-input",
+        "ha-finito",
+        "errore",
+        "inattivo"
+      ],
+      "description": "insieme chiuso di ADR 0410 D1"
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]{86}==$",
+      "description": "firma Ed25519 di 64 byte in base64 (§1.9, §1.10)"
+    },
+    "errorBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "homePath": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,15}$",
+      "description": "percorso relativo alla home dell'utente di servizio, vuoto = la home; segmenti con la regola dei nomi, niente nascosti, al più 16 (ADR 0409 A1.5)"
+    },
+    "fileName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$",
+      "description": "nome di file: la regola di un segmento, fino a 255 byte (ADR 0409 A1.5)"
+    },
+    "pathSegment": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "segmento di un percorso della home: la regola dei nomi, niente nascosti (ADR 0409 A1.5)"
+    }
+  }
+}

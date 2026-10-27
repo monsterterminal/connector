@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/backend-to-connector/error.json",
+  "title": "error",
+  "description": "Richiesta del connettore non valida (§1.5)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "error"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "$ref": "../../common.json#/$defs/errorBody"
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}

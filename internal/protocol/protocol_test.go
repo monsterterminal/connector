@@ -108,6 +108,13 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/connector-to-backend/session.rename.result.json", SessionRename{}},
 		{"messages/connector-to-backend/session.zoom.result.json", SessionZoomResult{Panes: 1}},
 		{"messages/connector-to-backend/session.capture.result.json", SessionCaptureResult{}},
+		// Schemi 0.7.0 (ADR 0409 A1.5): DragMeHere sugli host.
+		{"messages/backend-to-connector/file.put.json", FilePut{Overwrite: true}},
+		{"messages/connector-to-backend/file.put.result.json", FilePutResult{Path: "x", Size: 1, SHA256: "x"}},
+		{"messages/backend-to-connector/file.cancel.json", TransferBody{}},
+		{"messages/connector-to-backend/file.cancel.result.json", TransferBody{}},
+		{"messages/backend-to-connector/dir.list.json", DirList{}},
+		{"messages/connector-to-backend/dir.list.result.json", DirListResult{}},
 	}
 	for _, c := range cases {
 		if c.value == nil {
@@ -181,7 +188,34 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		textMax("messages/connector-to-backend/session.buffer.result.json") != MaxBufferBytes {
 		t.Error("tetti dei testi: schema e Go divergono")
 	}
-	if Version != 1 || SchemaVersion != "0.6.0" {
+	// DragMeHere: regole dei nomi e tetti dello schema = quelli del Go (ADR 0409 A1.5).
+	defsFiles := common["$defs"].(map[string]any)
+	if defsFiles["pathSegment"].(map[string]any)["pattern"] != pathSegmentRE.String() ||
+		defsFiles["fileName"].(map[string]any)["pattern"] != fileNameRE.String() {
+		t.Error("regole dei segmenti o dei nomi di file: schema e Go divergono")
+	}
+	if int(defsFiles["homePath"].(map[string]any)["maxLength"].(float64)) != MaxPathBytes {
+		t.Error("homePath maxLength diverso da MaxPathBytes")
+	}
+	// homePath dello schema (ECMA, non compilabile in RE2) e IsHomePath del Go danno lo stesso verdetto.
+	for p, want := range map[string]bool{
+		"": true, "a": true, "a/b.c/d_e-f": true, strings.Repeat("a/", 15) + "a": true,
+		strings.Repeat("a/", 16) + "a": false, "/a": false, "a/": false, "a//b": false, "..": false, "a/../b": false,
+		".ssh": false, "a/.git": false, "a b": false, strings.Repeat("x", 129): false,
+	} {
+		if IsHomePath(p) != want {
+			t.Errorf("IsHomePath(%q) = %v, atteso %v", p, !want, want)
+		}
+	}
+	put := readSchema(t, "messages/backend-to-connector/file.put.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)
+	if int(put["size"].(map[string]any)["maximum"].(float64)) != MaxFileBytes || int(put["data"].(map[string]any)["maxLength"].(float64)) != MaxChunkBase64 {
+		t.Error("tetti di file.put: schema e Go divergono")
+	}
+	dl := readSchema(t, "messages/connector-to-backend/dir.list.result.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)
+	if int(dl["dirs"].(map[string]any)["maxItems"].(float64)) != MaxDirsListed {
+		t.Error("dir.list.result maxItems diverso da MaxDirsListed")
+	}
+	if Version != 1 || SchemaVersion != "0.7.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }
@@ -329,5 +363,41 @@ func TestDecodeComandiZeroSei(t *testing.T) {
 	raw, _ := json.Marshal(SessionBufferResult{Channel: 1})
 	if string(raw) != `{"channel":1,"text":null}` {
 		t.Errorf("buffer assente: %s", raw)
+	}
+}
+
+// Decodifica di DragMeHere (ADR 0409 A1.5).
+func TestDecodeFilePutEDirList(t *testing.T) {
+	ok := `{"transferId":"` + NewUUID() + `","path":"a/b","filename":"f.txt","size":3,"sha256":"` + strings.Repeat("0", 64) + `","chunkIndex":0,"totalChunks":1,"data":"YWJj"}`
+	p, err := DecodeFilePut([]byte(ok))
+	if err != nil || string(p.Data) != "abc" || p.Overwrite || p.Path != "a/b" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	cases := map[string]error{
+		strings.Replace(ok, `"a/b"`, `"../b"`, 1):                      ErrPathInvalid,
+		strings.Replace(ok, `"f.txt"`, `".bashrc"`, 1):                 ErrPathInvalid,
+		strings.Replace(ok, `"size":3`, `"size":52428801`, 1):          ErrFileTooLarge,
+		strings.Replace(ok, `"YWJj"`, `"Y WJj"`, 1):                    ErrInvalid,
+		strings.Replace(ok, `"chunkIndex":0`, `"chunkIndex":-1`, 1):    ErrInvalid,
+		strings.Replace(ok, `"size":3`, `"size":0`, 1):                 ErrInvalid,
+		strings.Replace(ok, `"data":"YWJj"`, `"data":"YWJj","x":1`, 1): ErrInvalid,
+		strings.Replace(ok, strings.Repeat("0", 64), "ABC", 1):         ErrInvalid,
+	}
+	for in, want := range cases {
+		if _, err := DecodeFilePut([]byte(in)); !errors.Is(err, want) {
+			t.Errorf("%s: %v, atteso %v", in, err, want)
+		}
+	}
+	if _, err := DecodeFilePut([]byte(strings.Replace(ok, `"a/b"`, `"../b"`, 1))); errors.Is(err, ErrFileTooLarge) {
+		t.Error("un percorso fuori regola non è FILE_TOO_LARGE")
+	}
+	if d, err := DecodeDirList([]byte(`{"path":""}`)); err != nil || d.Path != "" {
+		t.Fatalf("dir.list home: %v", err)
+	}
+	if _, err := DecodeDirList([]byte(`{"path":"/etc"}`)); !errors.Is(err, ErrPathInvalid) {
+		t.Errorf("dir.list assoluto: %v", err)
+	}
+	if _, err := DecodeFileCancel([]byte(`{"transferId":"x"}`)); err == nil {
+		t.Error("file.cancel con transferId non UUID accettato")
 	}
 }

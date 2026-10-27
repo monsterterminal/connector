@@ -278,7 +278,7 @@ func TestLaRegistrazioneDichiaraLaVersioneDegliSchemi(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := s.DeclaredSchemas()
-	if len(got) != 1 || got[0] != protocol.SchemaVersion || protocol.SchemaVersion != "0.6.0" {
+	if len(got) != 1 || got[0] != protocol.SchemaVersion || protocol.SchemaVersion != "0.7.0" {
 		t.Fatalf("X-MonsterTerminal-Schema dichiarati: %v, atteso [0.5.0]", got)
 	}
 }
