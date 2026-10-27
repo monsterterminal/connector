@@ -1,36 +1,43 @@
 # Changelog
 
-## v0.5.0 — 2026-10-27
+## v0.5.1 — 2026-10-27
 
 Quarto rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
 schemi 0.7.0 e lo dichiara con `X-MonsterTerminal-Schema`. Compatibile all'indietro con un backend agli
 schemi 0.5.0 o 0.6.0: ciò che il backend non conosce non lo manda.
 
-- DragMeHere sugli host del connettore (ADR 0409 A1.5): i file trascinati nel browser arrivano in una
-  cartella esistente della home dell'utente di servizio, a blocchi, con sha256 verificato e rinomina
-  atomica; i symlink non portano fuori dalla home, nessun file nasce eseguibile, nessun messaggio
-  esegue nulla. La cartella si sceglie dall'elenco in sola lettura delle cartelle della home.
+- DragMeHere sugli host del connettore (ADR 0409 A1.5): i file trascinati nel browser arrivano sempre
+  in `~/dragmehere/` sull'host (o in una sua sottocartella scritta dall'utente), a blocchi, con sha256
+  verificato e rinomina atomica; i symlink non si seguono, nessun file nasce eseguibile, nessun
+  messaggio esegue nulla.
+
+## v0.5.0 — ritirata prima della firma
+
+Taggata il 2026-10-27 con una prima forma della 0.7.0 (scelta della cartella con `dir.list`), mai
+firmata né pubblicata. Il BOSS ha deciso la cartella fissa `~/dragmehere` prima del rilascio: la 0.7.0
+è stata corretta sul ramo principale e il rilascio è la v0.5.1.
 
 ## Schemi 0.7.0 — 2026-10-27
 
 - Solo aggiunte rispetto a 0.6.0 (protocollo sempre 1), ADR 0409 A1.5 (DragMeHere sugli host):
-  `file.put` (blocchi in sequenza: `transferId`, `path`, `filename`, `size` ≤ 50 MiB, `sha256`,
-  `overwrite` facoltativo, `chunkIndex`, `totalChunks`, `data` base64 ≤ 262144 caratteri), `file.cancel`,
-  `dir.list`, con le risposte per `re`; in `common.json` le definizioni `pathSegment`, `homePath` e
-  `fileName`. Codici di `error` nuovi: `PATH_INVALID`, `DIR_NOT_FOUND`, `FILE_EXISTS`,
-  `FILE_TOO_LARGE`, `DISK_FULL`, `TRANSFER_LIMIT`, `TRANSFER_UNKNOWN`, `CHECKSUM_MISMATCH`,
-  `PROTOCOL_ERROR`.
+  `file.put` (blocchi in sequenza: `transferId`, `path` = sottocartella di `~/dragmehere` vuota o di un
+  segmento, `filename`, `size` ≤ 50 MiB, `sha256`, `overwrite` facoltativo, `chunkIndex`, `totalChunks`,
+  `data` base64 ≤ 262144 caratteri) e `file.cancel`, con le risposte per `re`; in `common.json` le
+  definizioni `pathSegment`, `dragmehereDir` e `fileName`. Codici di `error` nuovi: `PATH_INVALID`,
+  `FILE_EXISTS`, `FILE_TOO_LARGE`, `DISK_FULL`, `TRANSFER_LIMIT`, `TRANSFER_UNKNOWN`,
+  `CHECKSUM_MISMATCH`, `PROTOCOL_ERROR`. La prima forma (taggata in v0.5.0, mai rilasciata) aveva anche
+  `dir.list` e un percorso libero nella home: tolti per decisione del BOSS del 2026-10-27.
 
 ## Connettore — 2026-10-27 (non rilasciato, dopo la v0.4.0)
 
-- DragMeHere sugli host (ADR 0409 A1.5): ricevitore `internal/files`. Percorsi risolti dalla home con
-  `openat` e `O_NOFOLLOW` (un symlink è `PATH_INVALID`), temporaneo `.mt-<transferId>.part` aperto con
-  `O_EXCL` e modo 0644, sha256 verificato all'ultimo blocco e rinomina atomica (`RENAME_NOREPLACE`
-  senza `overwrite`, quindi `FILE_EXISTS` anche se il file compare durante il trasferimento), al più 4
-  trasferimenti, 60 secondi d'inattività, spazio libero controllato col primo blocco (`DISK_FULL`),
-  annullamento alla caduta della connessione. `dir.list` elenca solo le cartelle visibili, senza
-  symlink, ordinate, al più 500. Senza una home leggibile il ricevitore non parte e il backend riceve
-  `TYPE_UNKNOWN`.
+- DragMeHere sugli host (ADR 0409 A1.5): ricevitore `internal/files`. I file vanno sempre in
+  `~/dragmehere` o in una sua sottocartella di un livello, create 0755 se mancano e aperte con `openat` e
+  `O_NOFOLLOW` (un symlink o un file al loro posto è `PATH_INVALID`); temporaneo `.mt-<transferId>.part`
+  aperto con `O_EXCL` e modo 0644, sha256 verificato all'ultimo blocco e rinomina atomica
+  (`RENAME_NOREPLACE` senza `overwrite`, quindi `FILE_EXISTS` anche se il file compare durante il
+  trasferimento), al più 4 trasferimenti, 60 secondi d'inattività, spazio libero controllato col primo
+  blocco (`DISK_FULL`), annullamento alla caduta della connessione. Senza una home leggibile il
+  ricevitore non parte e il backend riceve `TYPE_UNKNOWN`.
 - Gli schemi dichiarati con `X-MonsterTerminal-Schema` diventano 0.7.0: il backend manda DragMeHere solo
   da 0.7.0, i comandi di sessione da 0.6.0.
 

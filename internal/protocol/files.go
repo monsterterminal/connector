@@ -1,14 +1,14 @@
 package protocol
 
-// DragMeHere sugli host del connettore, schemi 0.7.0 (ADR 0409 A1.5): file dal browser verso la home
-// dell'utente di servizio, a blocchi in sequenza, e l'elenco delle cartelle per sceglierne una. Nessun
-// messaggio esegue nulla: il vocabolario resta chiuso (§1.6).
+// DragMeHere sugli host del connettore, schemi 0.7.0 (ADR 0409 A1.5): file dal browser verso
+// ~/dragmehere (o una sua sottocartella di un livello) nella home dell'utente di servizio, a blocchi in
+// sequenza. Niente navigazione delle cartelle (decisione BOSS 2026-10-27). Nessun messaggio esegue
+// nulla: il vocabolario resta chiuso (§1.6).
 
 import (
 	"encoding/base64"
 	"fmt"
 	"regexp"
-	"strings"
 )
 
 const (
@@ -16,14 +16,11 @@ const (
 	TypeFilePutResult    = "file.put.result"
 	TypeFileCancel       = "file.cancel"
 	TypeFileCancelResult = "file.cancel.result"
-	TypeDirList          = "dir.list"
-	TypeDirListResult    = "dir.list.result"
 )
 
 // Codici di errore di DragMeHere (ADR 0409 A1.5).
 const (
 	CodePathInvalid      = "PATH_INVALID"
-	CodeDirNotFound      = "DIR_NOT_FOUND"
 	CodeFileExists       = "FILE_EXISTS"
 	CodeFileTooLarge     = "FILE_TOO_LARGE"
 	CodeDiskFull         = "DISK_FULL"
@@ -38,10 +35,9 @@ const (
 	MaxFileBytes      = 50 << 20 // il tetto di DragMeHere
 	MaxChunkBase64    = 262144   // caratteri di data, cioè 192 KiB decodificati
 	MaxChunkBytes     = 192 << 10
-	MaxPathBytes      = 1024
-	MaxPathSegments   = 16
-	MaxDirsListed     = 500
 	MaxTransfersAlive = 4
+	// DropDir è la cartella di DragMeHere nella home dell'utente di servizio.
+	DropDir = "dragmehere"
 )
 
 var (
@@ -54,35 +50,12 @@ var (
 // nomi nascosti.
 func IsPathSegment(s string) bool { return pathSegmentRE.MatchString(s) }
 
-// IsHomePath applica la regola dei percorsi della home (common.json#homePath): vuoto = la home,
-// altrimenti al più 16 segmenti con la regola di un segmento, 1024 byte in tutto. Si controlla per
-// segmenti perché l'espressione dello schema supera il tetto delle ripetizioni di RE2.
-func IsHomePath(s string) bool {
-	if s == "" {
-		return true
-	}
-	segs := strings.Split(s, "/")
-	if len(s) > MaxPathBytes || len(segs) > MaxPathSegments {
-		return false
-	}
-	for _, seg := range segs {
-		if !IsPathSegment(seg) {
-			return false
-		}
-	}
-	return true
-}
+// IsDropSubdir applica la regola della sottocartella di ~/dragmehere (common.json#dragmehereDir): vuoto
+// = ~/dragmehere stessa, altrimenti un solo segmento.
+func IsDropSubdir(s string) bool { return s == "" || IsPathSegment(s) }
 
 // IsFileName applica la regola dei nomi di file (common.json#fileName).
 func IsFileName(s string) bool { return fileNameRE.MatchString(s) }
-
-// PathSegments divide un percorso valido nei suoi segmenti; vuoto = nessun segmento (la home).
-func PathSegments(p string) []string {
-	if p == "" {
-		return nil
-	}
-	return strings.Split(p, "/")
-}
 
 // FilePut è un blocco di file.put, con i dati già decodificati.
 type FilePut struct {
@@ -139,7 +112,7 @@ func DecodeFilePut(body []byte) (FilePut, error) {
 		return p, ErrFileTooLarge
 	case len(*m.Data) > MaxChunkBase64:
 		return p, fmt.Errorf("file.put: data oltre %d caratteri: %w", MaxChunkBase64, ErrInvalid)
-	case !IsHomePath(p.Path), !IsFileName(p.Filename):
+	case !IsDropSubdir(p.Path), !IsFileName(p.Filename):
 		return p, ErrPathInvalid
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(*m.Data)
@@ -181,33 +154,4 @@ func DecodeFileCancel(body []byte) (TransferBody, error) {
 		return TransferBody{}, fmt.Errorf("file.cancel: transferId mancante o non UUID: %w", ErrInvalid)
 	}
 	return TransferBody{TransferID: *m.TransferID}, nil
-}
-
-// DirList è il corpo di dir.list.
-type DirList struct {
-	Path string `json:"path"`
-}
-
-// DecodeDirList decodifica dir.list; un percorso fuori regola è ErrPathInvalid.
-func DecodeDirList(body []byte) (DirList, error) {
-	var m struct {
-		Path *string `json:"path"`
-	}
-	if err := DecodeStrict(body, &m); err != nil {
-		return DirList{}, err
-	}
-	if m.Path == nil {
-		return DirList{}, fmt.Errorf("dir.list: path mancante: %w", ErrInvalid)
-	}
-	if !IsHomePath(*m.Path) {
-		return DirList{Path: *m.Path}, ErrPathInvalid
-	}
-	return DirList{Path: *m.Path}, nil
-}
-
-// DirListResult è il corpo di dir.list.result.
-type DirListResult struct {
-	Path      string   `json:"path"`
-	Dirs      []string `json:"dirs"`
-	Truncated bool     `json:"truncated"`
 }

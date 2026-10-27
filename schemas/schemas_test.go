@@ -86,14 +86,15 @@ var wantMessages = map[string]map[string][]string{
 			"session.open", "session.refresh", "session.rename", "session.resize", "session.zoom", "sessions.list",
 			"update.available", "welcome"},
 	},
-	// 0.7.0 (2026-10-27, ADR 0409 A1.5): DragMeHere sugli host, file.put, file.cancel e dir.list.
+	// 0.7.0 (2026-10-27, ADR 0409 A1.5): DragMeHere sugli host, file.put e file.cancel verso ~/dragmehere
+	// (decisione BOSS 2026-10-27: niente navigazione delle cartelle, quindi niente dir.list).
 	"0.7.0": {
-		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "dir.list.result", "error",
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
 			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
 			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
 			"session.interrupt.result", "session.kill.result", "session.opened", "session.refresh.result",
 			"session.rename.result", "session.zoom.result", "sessions.list.result", "update.result"},
-		"backend-to-connector": {"catalog.install", "config.update", "dir.list", "error", "events.ack", "file.cancel",
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "file.cancel",
 			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
 			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
 			"session.zoom", "sessions.list", "update.available", "welcome"},
@@ -602,8 +603,9 @@ func TestZeroSeiEstendeZeroCinque(t *testing.T) {
 }
 
 // TestZeroSetteEstendeZeroSei: la 0.7.0 non toglie nulla alla 0.6.0 e aggiunge solo ciò che ADR 0409
-// A1.5 prevede: le definizioni homePath, fileName e pathSegment in common.json e i messaggi file.put,
-// file.cancel, dir.list con le risposte. Ogni altro file resta byte per byte uguale.
+// A1.5 prevede: le definizioni pathSegment, dragmehereDir e fileName in common.json e i messaggi file.put
+// e file.cancel con le risposte; niente dir.list (decisione BOSS 2026-10-27). Ogni altro file resta byte
+// per byte uguale.
 func TestZeroSetteEstendeZeroSei(t *testing.T) {
 	old, cur := loadAll(t, "0.6.0"), loadAll(t, "0.7.0")
 	props := func(n any) map[string]any {
@@ -626,7 +628,7 @@ func TestZeroSetteEstendeZeroSei(t *testing.T) {
 					t.Errorf("common.json: definizione %s cambiata", k)
 				}
 			}
-			for _, k := range []string{"homePath", "fileName", "pathSegment"} {
+			for _, k := range []string{"dragmehereDir", "fileName", "pathSegment"} {
 				if cd[k] == nil {
 					t.Errorf("common.json 0.7.0 senza %s", k)
 				}
@@ -649,7 +651,7 @@ func TestZeroSetteEstendeZeroSei(t *testing.T) {
 		sort.Strings(out)
 		return out
 	}
-	for _, cmd := range []string{"file.put", "file.cancel", "dir.list"} {
+	for _, cmd := range []string{"file.put", "file.cancel"} {
 		req := cur["messages/backend-to-connector/"+cmd+".json"]
 		res := cur["messages/connector-to-backend/"+cmd+".result.json"]
 		if req == nil || res == nil {
@@ -671,12 +673,15 @@ func TestZeroSetteEstendeZeroSei(t *testing.T) {
 		t.Error("file.put overwrite è facoltativo (assente = false)")
 	}
 	for _, f := range []string{"path"} {
-		if put[f].(map[string]any)["$ref"] != "../../common.json#/$defs/homePath" {
-			t.Errorf("file.put %s non usa homePath", f)
+		if put[f].(map[string]any)["$ref"] != "../../common.json#/$defs/dragmehereDir" {
+			t.Errorf("file.put %s non usa dragmehereDir", f)
 		}
 	}
-	if len(cur) != len(old)+6 {
-		t.Errorf("0.7.0 aggiunge %d file, attesi 6", len(cur)-len(old))
+	if _, ok := cur["messages/backend-to-connector/dir.list.json"]; ok {
+		t.Error("dir.list non fa parte della 0.7.0 (decisione BOSS 2026-10-27)")
+	}
+	if len(cur) != len(old)+4 {
+		t.Errorf("0.7.0 aggiunge %d file, attesi 4", len(cur)-len(old))
 	}
 }
 

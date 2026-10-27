@@ -261,7 +261,7 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	// Stati degli agenti (spec §1.21): socket degli hook di Claude Code, timer di inattività e
 	// richieste di permesso (§2.12).
 	thresholds, requests := a.startAgents(ctx, log, j, stateDir)
-	// DragMeHere (ADR 0409 A1.5): i file arrivano solo dentro la home dell'utente di servizio. Senza home
+	// DragMeHere (ADR 0409 A1.5): i file arrivano solo in ~/dragmehere dell'utente di servizio. Senza home
 	// leggibile il ricevitore non c'è e il backend riceve TYPE_UNKNOWN.
 	var recv transport.Files
 	if home, err := a.home(); err == nil && home != "" {

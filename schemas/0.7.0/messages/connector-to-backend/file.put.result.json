@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://monsterterminal.com/schemas/connector/0.7.0/messages/connector-to-backend/file.put.result.json",
   "title": "file.put.result",
-  "description": "Esito di un blocco; con done anche il percorso, la dimensione e lo sha256 del file scritto (ADR 0409 A1.5, schemi 0.7.0)",
+  "description": "Esito di un blocco; con done anche il percorso relativo alla home (dragmehere/…), la dimensione e lo sha256 del file scritto (ADR 0409 A1.5, schemi 0.7.0)",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -39,7 +39,7 @@
         },
         "path": {
           "type": "string",
-          "maxLength": 1280
+          "maxLength": 400
         },
         "size": {
           "type": "integer",
