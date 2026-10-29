@@ -4,12 +4,18 @@ Il connettore di MonsterTerminal: un piccolo programma installato sull'host del 
 connessione in uscita verso MonsterTerminal, registra l'host e lascia lavorare tmux e gli agenti AI
 anche quando il collegamento cade.
 
-> Stato: **seconda fetta**, allineata al gateway vero (ADR 0409, verbale 2026-10-13). Registrazione e
-> sostituzione dell'host, collegamento in uscita con heartbeat, ricollegamento, revoca e kill-switch,
-> giornale degli eventi con conferme del backend, canali del terminale sulle sessioni tmux, stati degli
-> agenti AI (Claude Code con hook, livello generico con timer di inattività), richieste di permesso con
-> risposta dalla card (§2.12). Eventi prodotti: `connector.restarted` e `agent.state`; messaggi fuori dal
-> giornale: `request.context`, `request.respond.result`. Non ci sono ancora catalogo né aggiornamenti. Schemi del protocollo 0.7.0.
+> Stato: **v0.5.1**, schemi del protocollo **0.7.0**, in uso con il gateway di MonsterTerminal (ADR
+> 0409). Cosa fa oggi: registrazione e sostituzione dell'host; collegamento in uscita con heartbeat,
+> ricollegamento, revoca e kill-switch; giornale degli eventi con conferme del backend; terminale sulle
+> sessioni tmux con i sette comandi di sessione (ridisegno, interruzione, appunti, chiusura, rinomina,
+> zoom, cattura) e l'adattamento alla pane; **DragMeHere**, cioè i file trascinati nel browser che arrivano
+> in `~/dragmehere/` sull'host; stati degli agenti AI (Claude Code con gli hook, livello generico con
+> timer d'inattività); richieste di permesso e domande di Claude Code con risposta dalla card. Rilasci
+> firmati con Ed25519 e installazione verificata da `install.sh`.
+>
+> Cosa non c'è ancora: l'aggiornamento automatico (oggi si aggiorna rilanciando `install.sh`, vedi
+> [Aggiornare](#aggiornare)), il catalogo delle ricette di installazione degli agenti e gli adattatori per
+> agenti diversi da Claude Code (Codex CLI è il prossimo).
 
 ## Uso
 
@@ -76,8 +82,8 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   i trasferimenti aperti si annullano. Output in frame
   da al massimo 64 KiB, accorpato per 5 ms e dosato col resto dei messaggi; oltre 4 MiB in coda i
   canali smettono di leggere da tmux finché la coda non scende sotto 1 MiB. Allo spegnimento il
-  backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host. Limiti della
-  prima fetta: niente specchio largo, riallineamento dello schermo, schermate e trascrizioni.
+  backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host. Non ci sono
+  ancora lo specchio largo né la trascrizione continua delle sessioni.
 - **Stati degli agenti** (§1.21, ADR 0410): gli hook di Claude Code eseguono `monsterterminal-connector
   hook <evento>`, che ricava la sessione tmux da `TMUX_PANE` e la passa al connettore su un socket locale
   (`hook.sock` nella cartella di stato, `0600`); il connettore scrive `agent.state` nel giornale solo
@@ -153,17 +159,19 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/terminal/` | canali del terminale sulle sessioni tmux |
 | `internal/journal/` | giornale degli eventi sul disco dell'host |
 | `internal/agents/` | adattatore di Claude Code (hook), timer di inattività, installazione degli hook |
-| `internal/catalog/` | esecuzione delle ricette firmate |
-| `internal/update/` | aggiornamento firmato e ritorno alla versione precedente |
+| `internal/files/` | DragMeHere: ricezione dei file a blocchi in `~/dragmehere/` |
+| `internal/hostinfo/` | dati dell'host dichiarati alla registrazione |
+| `internal/hostconf/` | lettura di `connector.conf` (scelte del cliente) |
 | `internal/signing/` | verifica Ed25519 con le chiavi pubbliche incluse nel binario |
+| `internal/catalog/` | esecuzione delle ricette firmate (prevista, non ancora presente) |
+| `internal/update/` | aggiornamento firmato e ritorno alla versione precedente (previsto, non ancora presente) |
+| `internal/fakeserver/` | backend finto che parla il protocollo come il gateway vero, solo per i test |
 | `schemas/<versione>/` | JSON Schema del protocollo, fonte unica del contratto |
 | `packaging/` | script di installazione (`install.sh`) e il suo banco di prova |
+| `scripts/` | firma e pubblicazione dei rilasci |
 
-Le cartelle si creano quando arriva il codice che ci va dentro. Oggi esistono `cmd/monsterterminal-connector`,
-`internal/protocol`, `internal/register`, `internal/transport`, `internal/journal`, `internal/terminal`,
-`internal/agents`, `internal/hostinfo` e
-`internal/fakeserver`, un backend finto che parla il protocollo 0.1.0 come il gateway vero e serve solo
-ai test.
+Le cartelle si creano quando arriva il codice che ci va dentro: oggi mancano solo `internal/catalog` e
+`internal/update`.
 
 ## Test
 
@@ -180,10 +188,12 @@ terminale su un server tmux privato (non tocca le sessioni dell'utente; i test s
 
 ## Installazione
 
-Il comando lo mostra la UI di MonsterTerminal, con un token di installazione monouso (§1.14):
+Il comando lo mostra la UI di MonsterTerminal, con un token di installazione monouso (§1.14). Per non
+lasciare il token nella cronologia della shell, leggilo prima senza eco:
 
 ```
-curl -fsSL https://monsterterminal.com/install.sh | sudo env MONSTERTERMINAL_INSTALL_TOKEN=mti_… sh
+read -rs MT_TOK    # incolla il token e premi Invio
+curl -fsSL https://monsterterminal.com/install.sh | sudo env MONSTERTERMINAL_INSTALL_TOKEN="$MT_TOK" sh; unset MT_TOK
 ```
 
 Lo script (`packaging/install.sh`, POSIX sh) scarica il rilascio da GitHub, **verifica la firma
@@ -210,7 +220,16 @@ Lo script si ferma senza installare nulla se la firma del rilascio non è valida
 chiave pubblica: la verifica non è opzionale. `--insecure-skip-signature` esiste solo per istanze di
 prova e lo dichiara a voce alta.
 
-Fino al primo rilascio firmato il connettore si compila dai sorgenti con
+### Aggiornare
+
+L'aggiornamento automatico non c'è ancora. Per passare all'ultima versione si rilancia il comando di
+installazione con un token preso dalla UI, **senza** `--replace`: lo script trova l'host già registrato,
+non lo registra di nuovo (il token non viene usato), verifica la firma del nuovo rilascio, sostituisce il
+binario e riavvia il servizio. Le sessioni tmux restano vive. Che lo script chieda un token anche quando
+non lo usa è un limite noto, da togliere in un prossimo rilascio.
+
+`--replace` (con un token nuovo) serve solo per registrare di nuovo la macchina: l'host precedente viene
+revocato e quello nuovo ha un altro identificativo. Per compilare dai sorgenti:
 `go build ./cmd/monsterterminal-connector`.
 
 ### Rilasci
