@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/messages/connector-to-backend/hello.json",
+  "title": "hello",
+  "description": "Primo messaggio del connettore dopo l'apertura (§1.4, §1.6)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "hello"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectorVersion": {
+          "$ref": "../../common.json#/$defs/semver"
+        },
+        "protocol": {
+          "$ref": "../../common.json#/$defs/protocol"
+        },
+        "os": {
+          "$ref": "../../common.json#/$defs/os"
+        },
+        "arch": {
+          "$ref": "../../common.json#/$defs/arch"
+        },
+        "runAsUser": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+        },
+        "runAsRoot": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "hooks",
+              "output-patterns",
+              "catalog-install",
+              "auto-update",
+              "recording"
+            ]
+          }
+        },
+        "autoUpdateEnabled": {
+          "type": "boolean"
+        },
+        "catalogInstallEnabled": {
+          "type": "boolean"
+        },
+        "lastAckedSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 se nessun evento è mai stato confermato",
+          "maximum": 9007199254740991
+        },
+        "agents": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "agent": {
+                "$ref": "../../common.json#/$defs/agentId"
+              },
+              "version": {
+                "type": "string",
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "agent",
+              "version"
+            ]
+          }
+        }
+      },
+      "required": [
+        "connectorVersion",
+        "protocol",
+        "os",
+        "arch",
+        "runAsUser",
+        "runAsRoot",
+        "capabilities",
+        "autoUpdateEnabled",
+        "catalogInstallEnabled",
+        "lastAckedSeq",
+        "agents"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

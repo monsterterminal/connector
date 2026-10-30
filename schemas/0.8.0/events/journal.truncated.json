@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/events/journal.truncated.json",
+  "title": "journal.truncated",
+  "description": "Il giornale ha scartato eventi non confermati; si invia per primo alla riconnessione (§1.12) (§1.8). Schema del campo data del messaggio event.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "droppedCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "firstKeptSeq": {
+      "$ref": "../common.json#/$defs/seq"
+    },
+    "oldestDroppedAt": {
+      "$ref": "../common.json#/$defs/timestamp"
+    },
+    "newestDroppedAt": {
+      "$ref": "../common.json#/$defs/timestamp"
+    }
+  },
+  "required": [
+    "droppedCount",
+    "firstKeptSeq",
+    "oldestDroppedAt",
+    "newestDroppedAt"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/envelope.json",
+  "title": "Busta dei messaggi di controllo",
+  "description": "Forma comune di ogni frame di testo (§1.5). Ogni messaggio la specializza con il suo type e il suo body.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string"
+    },
+    "id": {
+      "$ref": "common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

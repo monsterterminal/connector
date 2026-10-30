@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/messages/connector-to-backend/request.context.json",
+  "title": "request.context",
+  "description": "Contesto di una richiesta dell'agente, fuori dal giornale (§2.9 punto 2). Dalla 0.3.0 porta anche deadline (§2.12); dalla 0.5.0 le domande con le opzioni (§2.14).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "request.context"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "session": {
+          "$ref": "../../common.json#/$defs/sessionName"
+        },
+        "agent": {
+          "$ref": "../../common.json#/$defs/agentId"
+        },
+        "kind": {
+          "enum": [
+            "permesso",
+            "domanda"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 16384
+        },
+        "deadline": {
+          "$ref": "../../common.json#/$defs/timestamp",
+          "description": "Istante in cui scade la finestra in cui l'hook aspetta la risposta dalla card (spec §2.12, finestra adattiva). Opzionale: un connettore 0.2.0 non lo manda."
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "description": "Le domande dell'agente con le loro opzioni (spec §2.14, fetta 3b): solo con kind «domanda». Opzionale: un connettore fino alla 0.4.0 non lo manda e la card resta al testo libero.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "header": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "options": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ]
+                }
+              },
+              "multiSelect": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "question",
+              "options",
+              "multiSelect"
+            ]
+          }
+        }
+      },
+      "required": [
+        "requestId",
+        "session",
+        "agent",
+        "kind",
+        "action",
+        "detail"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

@@ -208,7 +208,7 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if int(put["size"].(map[string]any)["maximum"].(float64)) != MaxFileBytes || int(put["data"].(map[string]any)["maxLength"].(float64)) != MaxChunkBase64 {
 		t.Error("tetti di file.put: schema e Go divergono")
 	}
-	if Version != 1 || SchemaVersion != "0.7.0" {
+	if Version != 1 || SchemaVersion != "0.8.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }

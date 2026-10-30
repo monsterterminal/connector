@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/messages/backend-to-connector/welcome.json",
+  "title": "welcome",
+  "description": "Risposta a hello (§1.4, §1.11)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "welcome"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "protocol": {
+          "$ref": "../../common.json#/$defs/protocol"
+        },
+        "serverTime": {
+          "$ref": "../../common.json#/$defs/timestamp"
+        },
+        "config": {
+          "$ref": "../../objects/host-config.json"
+        }
+      },
+      "required": [
+        "hostId",
+        "protocol",
+        "serverTime",
+        "config"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}
