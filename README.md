@@ -4,7 +4,7 @@ Il connettore di MonsterTerminal: un piccolo programma installato sull'host del 
 connessione in uscita verso MonsterTerminal, registra l'host e lascia lavorare tmux e gli agenti AI
 anche quando il collegamento cade.
 
-> Stato: **v0.5.1**, schemi del protocollo **0.7.0**, in uso con il gateway di MonsterTerminal (ADR
+> Stato: **v0.5.1**, schemi del protocollo **0.7.0** (sul ramo principale 0.8.0, verso la v0.6.0), in uso con il gateway di MonsterTerminal (ADR
 > 0409). Cosa fa oggi: registrazione e sostituzione dell'host; collegamento in uscita con heartbeat,
 > ricollegamento, revoca e kill-switch; giornale degli eventi con conferme del backend; terminale sulle
 > sessioni tmux con i sette comandi di sessione (ridisegno, interruzione, appunti, chiusura, rinomina,
@@ -223,10 +223,17 @@ prova e lo dichiara a voce alta.
 ### Aggiornare
 
 L'aggiornamento automatico non c'è ancora. Per passare all'ultima versione si rilancia il comando di
-installazione con un token preso dalla UI, **senza** `--replace`: lo script trova l'host già registrato,
-non lo registra di nuovo (il token non viene usato), verifica la firma del nuovo rilascio, sostituisce il
-binario e riavvia il servizio. Le sessioni tmux restano vive. Che lo script chieda un token anche quando
-non lo usa è un limite noto, da togliere in un prossimo rilascio.
+installazione con un token **nuovo** preso dalla UI dello stesso spazio di lavoro, **senza** `--replace`.
+Lo script verifica la firma del nuovo rilascio, poi chiede al servizio, senza consumare il token, se il
+server registrato qui appartiene a quello spazio. Se sì, non registra di nuovo, sostituisce il binario e
+riavvia il servizio, e le sessioni tmux restano vive. Un token già usato non basta: senza un token
+valido lo script non sa per quale spazio sta lavorando. Che serva un token anche solo per aggiornare è
+un limite noto, da togliere con l'aggiornamento automatico.
+
+Un server appartiene a un solo spazio di lavoro e ha un solo connettore (ADR 0409 A2). Se il token è
+di un altro spazio, lo script si ferma senza toccare nulla: per spostare il server, revocalo dallo
+spazio di prima e rilancia con `--replace`. Anche un `--user` diverso da quello dell'installazione
+esistente ferma lo script.
 
 `--replace` (con un token nuovo) serve solo per registrare di nuovo la macchina: l'host precedente viene
 revocato e quello nuovo ha un altro identificativo. Per compilare dai sorgenti:
