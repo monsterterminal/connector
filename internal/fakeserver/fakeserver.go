@@ -3,7 +3,8 @@
 // Segue il gateway vero (monsterapp, ADR 0409, verbale 2026-10-13) dove il connettore se ne
 // accorge: registrazione col token di installazione monouso, NON consumato se il corpo non è
 // valido o la macchina è ferma (§1.3); sostituzione solo col token attuale nell'header
-// X-MonsterTerminal-Host-Token, stessa macchina (§1.3); kill-switch per macchina, 403 HOST_DISABLED
+// X-MonsterTerminal-Host-Token, stessa macchina, e mai verso un altro spazio di lavoro (409
+// HOST_OTHER_TENANT, verifica non consumante POST /v1/register/check: ADR 0409 A2); kill-switch per macchina, 403 HOST_DISABLED
 // anche alla registrazione; autenticazione dell'upgrade (§1.4), hello/welcome, ping (§1.2), una
 // connessione per host (4409), revoca (4401), kill-switch (4403); giornale col segnalibro che fa
 // fede (§1.12: ACK_AHEAD, SEQ_GAP, TRUNCATION_INCOHERENT, troncamento coerente); 50 messaggi al
@@ -19,6 +20,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,6 +44,7 @@ const RateLimit = 50
 type host struct {
 	id        string
 	machineID string
+	tenant    string // spazio di lavoro, quello del token di installazione (ADR 0409 A2)
 	revoked   bool
 	disabled  bool
 	schema    string // X-MonsterTerminal-Schema dichiarato all'ultimo upgrade
@@ -87,12 +90,17 @@ type Server struct {
 	CompareVersion      func(a, b string) int
 	// MaxChannels è maxChannels della configurazione mandata in welcome; zero = 12.
 	MaxChannels int
+	// NoRegisterCheck simula un servizio (nginx o backend) che non conosce POST /v1/register/check:
+	// 404 con una pagina HTML, come nginx.
+	NoRegisterCheck bool
 	// AckDelay rallenta l'elaborazione di ogni evento accettato prima dell'ack, come un DB lento:
 	// gli eventi successivi restano in volo.
 	AckDelay time.Duration
 
 	mu              sync.Mutex
 	installTokens   map[string]time.Time // token -> scadenza
+	tokenTenant     map[string]string    // token -> spazio di lavoro; assente = DefaultTenant
+	checks          int                  // chiamate a POST /v1/register/check
 	hosts           map[string]*host     // sha256(token dell'host) -> host
 	disabledMachine map[string]bool
 	billingRequired bool
@@ -120,6 +128,7 @@ func New() *Server {
 func NewDetached() *Server {
 	s := &Server{
 		installTokens:   map[string]time.Time{},
+		tokenTenant:     map[string]string{},
 		hosts:           map[string]*host{},
 		disabledMachine: map[string]bool{},
 		closeAfterEvent: map[int64]websocket.StatusCode{},
@@ -128,6 +137,7 @@ func NewDetached() *Server {
 	}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
+	s.mux.HandleFunc("POST /v1/register/check", s.handleRegisterCheck)
 	s.mux.HandleFunc("GET /v1", s.handleWS)
 	return s
 }
@@ -177,9 +187,35 @@ func (s *Server) Client() *http.Client { return s.TLS.Client() }
 
 // AddInstallToken registra un token di installazione valido per ttl.
 func (s *Server) AddInstallToken(tok string, ttl time.Duration) {
+	s.AddInstallTokenFor(tok, ttl, DefaultTenant)
+}
+
+// DefaultTenant è lo spazio di lavoro dei token aggiunti con AddInstallToken.
+const DefaultTenant = "acme"
+
+// AddInstallTokenFor registra un token di installazione di uno spazio di lavoro preciso (ADR 0409 A2).
+func (s *Server) AddInstallTokenFor(tok string, ttl time.Duration, tenant string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.installTokens[tok] = time.Now().Add(ttl)
+	s.tokenTenant[tok] = tenant
+}
+
+// Checks conta le chiamate a POST /v1/register/check.
+func (s *Server) Checks() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checks
+}
+
+// HostTenant restituisce lo spazio di lavoro dell'host (vuoto se sconosciuto).
+func (s *Server) HostTenant(hostID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return h.tenant
+	}
+	return ""
 }
 
 // InstallTokenUsable dice se il token di installazione è ancora utilizzabile (non consumato).
@@ -225,15 +261,15 @@ func (s *Server) Upgrades() int {
 func (s *Server) AddHost() (hostID, token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.addHostLocked("")
+	return s.addHostLocked("", DefaultTenant)
 }
 
-func (s *Server) addHostLocked(machineID string) (string, string) {
+func (s *Server) addHostLocked(machineID, tenant string) (string, string) {
 	var b [32]byte
 	_, _ = rand.Read(b[:])
 	token := "mth_" + base64.RawURLEncoding.EncodeToString(b[:])
 	id := protocol.NewUUID()
-	s.hosts[hashToken(token)] = &host{id: id, machineID: machineID, output: map[uint32][]byte{}, replies: map[string]protocol.Envelope{}}
+	s.hosts[hashToken(token)] = &host{id: id, machineID: machineID, tenant: tenant, output: map[uint32][]byte{}, replies: map[string]protocol.Envelope{}}
 	return id, token
 }
 
@@ -466,6 +502,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		rejectForBilling(w, r)
 		return
 	}
+	tenant := s.tenantLocked(tok)
+	// ADR 0409 A2: il token attuale di un host vivo di un ALTRO spazio ferma tutto, prima di
+	// consumare il token di installazione.
+	if current != "" {
+		if old := s.hosts[hashToken(current)]; old != nil && !old.revoked && old.tenant != tenant {
+			s.mu.Unlock()
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "HOST_OTHER_TENANT"})
+			return
+		}
+	}
 	if !s.consumeLocked(tok) {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "INSTALL_TOKEN_INVALID"})
@@ -482,7 +528,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			replaced = old
 		}
 	}
-	id, token := s.addHostLocked(info.MachineID)
+	id, token := s.addHostLocked(info.MachineID, tenant)
 	extra := s.ExtraRegisterField
 	var oldConn *websocket.Conn
 	if replaced != nil {
@@ -498,6 +544,58 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		resp["tenantId"] = "da-non-accettare"
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (s *Server) tenantLocked(tok string) string {
+	if t, ok := s.tokenTenant[tok]; ok {
+		return t
+	}
+	return DefaultTenant
+}
+
+// handleRegisterCheck è POST /v1/register/check (schemi 0.8.0, ADR 0409 A2): mai consumante.
+func (s *Server) handleRegisterCheck(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.checks++
+	off := s.NoRegisterCheck
+	s.mu.Unlock()
+	if off {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, "<html><body><h1>404 Not Found</h1></body></html>")
+		return
+	}
+	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !s.InstallTokenUsable(tok) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "INSTALL_TOKEN_INVALID"})
+		return
+	}
+	var body struct {
+		MachineID string `json:"machineId"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	current := r.Header.Get(HeaderCurrentHostToken)
+	if err := dec.Decode(&body); err != nil || body.MachineID == "" || current == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"code": "BODY_INVALID"})
+		return
+	}
+	s.mu.Lock()
+	tenant := s.tenantLocked(tok)
+	old := s.hosts[hashToken(current)]
+	var resp map[string]any
+	switch {
+	case old == nil || old.revoked:
+		resp = map[string]any{"result": "not-registered"}
+	case old.tenant != tenant:
+		s.mu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "HOST_OTHER_TENANT"})
+		return
+	default:
+		resp = map[string]any{"result": "same-tenant", "sameMachine": old.machineID == body.MachineID}
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) consumeLocked(tok string) bool {

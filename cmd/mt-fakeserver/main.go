@@ -76,11 +76,17 @@ func run(args []string) int {
 	tokens := fs.Int("tokens", 1, "quanti token di installazione coniare all'avvio")
 	tokenFile := fs.String("token-file", "", "file 0600 con i token coniati, uno per riga (senza: stdout)")
 	statusFile := fs.String("status-file", "", "file JSON riscritto a ogni evento")
+	otherTokens := fs.Int("other-tokens", 0, "token di installazione di un ALTRO spazio di lavoro (ADR 0409 A2)")
+	otherTokenFile := fs.String("other-token-file", "", "file 0600 dei token dell'altro spazio (obbligatorio con -other-tokens)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if (*certFile == "") != (*keyFile == "") {
 		fmt.Fprintln(os.Stderr, "mt-fakeserver: -tls-cert e -tls-key vanno insieme")
+		return 2
+	}
+	if *otherTokens < 0 || (*otherTokens > 0) != (*otherTokenFile != "") {
+		fmt.Fprintln(os.Stderr, "mt-fakeserver: -other-tokens e -other-token-file vanno insieme")
 		return 2
 	}
 	if *tokens < 1 {
@@ -113,6 +119,22 @@ func run(args []string) int {
 	if err := publishTokens(*tokenFile, minted); err != nil {
 		fmt.Fprintln(os.Stderr, "mt-fakeserver:", err)
 		return 1
+	}
+	if *otherTokens > 0 {
+		other := make([]string, 0, *otherTokens)
+		for i := 0; i < *otherTokens; i++ {
+			tok, err := mintInstallToken()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "mt-fakeserver:", err)
+				return 1
+			}
+			s.AddInstallTokenFor(tok, *tokenTTL, "altro-spazio")
+			other = append(other, tok)
+		}
+		if err := publishTokens(*otherTokenFile, other); err != nil {
+			fmt.Fprintln(os.Stderr, "mt-fakeserver:", err)
+			return 1
+		}
 	}
 	if err := w.write(); err != nil {
 		fmt.Fprintln(os.Stderr, "mt-fakeserver:", err)

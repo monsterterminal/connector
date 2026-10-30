@@ -20,13 +20,14 @@ cache dei moduli e dei build in `~/.cache/go-banco`, riusata fra i giri).
 bash packaging/banco/banco.sh up         # chiavi, CA, build, rilascio firmato, rete e tre container
 bash packaging/banco/banco.sh negative   # firma sbagliata, token malformato, token sconosciuto
 bash packaging/banco/banco.sh install    # il comando di una riga + asserzioni (B2, B3, B7, B8)
+bash packaging/banco/banco.sh spazi      # un altro spazio di lavoro non prende il server (ADR 0409 A2)
 bash packaging/banco/banco.sh uninstall  # --uninstall --purge + asserzioni
 bash packaging/banco/banco.sh status     # lo status-file del backend finto (JSON)
 bash packaging/banco/banco.sh down       # rimuove tutto ciò che il banco ha creato (mt-banco-*)
-bash packaging/banco/banco.sh all        # up, negative, install, uninstall in un colpo (poi: down)
+bash packaging/banco/banco.sh all        # up, negative, install, spazi, uninstall in un colpo (poi: down)
 ```
 
-L'ordine naturale è `up → negative → install → uninstall → down`: `negative` prova l'host pulito
+L'ordine naturale è `up → negative → install → spazi → uninstall → down`: `negative` prova l'host pulito
 (N3 vuole un host non registrato; se lo trova registrato la salta e lo dice). Ogni sottocomando
 stampa le asserzioni (`ok`/`FAIL`), esce con 1 se una è rossa, e lascia le trascrizioni di
 `install.sh` in `~/mt-banco/status/*.log`.

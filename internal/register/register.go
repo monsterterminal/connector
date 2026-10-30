@@ -72,6 +72,8 @@ func (e *APIError) Hint() string {
 		return "registrazione rifiutata (HOST_DISABLED): questa macchina è fermata dal kill-switch del tenant o del super, da riattivare dal pannello degli host. Il token di installazione NON è stato consumato: rilanciare dopo"
 	case "BILLING_REQUIRED":
 		return "registrazione rifiutata (BILLING_REQUIRED): lo spazio di lavoro non ha un abbonamento attivo (prova scaduta, sola lettura o chiuso); l'owner lo avvia dalla pagina del billing, /admin/billing. Il token di installazione NON è stato consumato: rilanciare dopo"
+	case "HOST_OTHER_TENANT":
+		return "questo server è già registrato per un altro spazio di lavoro. Per spostarlo, revocalo da quello spazio e rilancia con --replace. Il token di installazione NON è stato consumato e nulla è cambiato"
 	case "SERVER_LIMIT":
 		return "il tenant ha raggiunto gli host inclusi nel piano; attivare l'extra o revocare un host dal pannello"
 	case "CONNECTOR_TOO_OLD":
@@ -160,6 +162,86 @@ func (c Client) Replace(ctx context.Context, installToken, currentHostToken stri
 	}
 	if !protocol.IsUUID(out.HostID) || !hostTokenRE.MatchString(out.HostToken) || out.Protocol < 1 || len(out.TenantLabel) > 200 {
 		return Response{}, fmt.Errorf("risposta di registrazione: %w", protocol.ErrInvalid)
+	}
+	return out, nil
+}
+
+// Esiti della verifica non consumante POST /v1/register/check (schemi 0.8.0, ADR 0409 A2).
+const (
+	CheckSameTenant    = "same-tenant"
+	CheckNotRegistered = "not-registered"
+)
+
+// CheckResult è la risposta 200 di POST /v1/register/check: SameMachine c'è solo con same-tenant.
+type CheckResult struct {
+	Result      string `json:"result"`
+	SameMachine *bool  `json:"sameMachine,omitempty"`
+}
+
+// ErrCheckUnavailable: il servizio non sa ancora rispondere alla verifica (404, oppure una risposta
+// fuori contratto). Chi la chiede non deve proseguire né con la registrazione né con l'aggiornamento.
+var ErrCheckUnavailable = errors.New("verifica dello spazio di lavoro non disponibile sul servizio")
+
+// Check chiede al backend se l'host di currentHostToken è di questo spazio (quello del token di
+// installazione), senza consumare il token (ADR 0409 A2). Un host di un altro spazio torna come
+// *APIError con codice HOST_OTHER_TENANT. Nessuno dei due token compare negli errori.
+func (c Client) Check(ctx context.Context, installToken, currentHostToken, machineID string) (CheckResult, error) {
+	var out CheckResult
+	if !installTokenRE.MatchString(installToken) {
+		return out, ErrInstallTokenFormat
+	}
+	if !hostTokenRE.MatchString(currentHostToken) {
+		return out, errors.New("token attuale dell'host malformato")
+	}
+	if !strings.HasPrefix(c.BaseURL, "https://") {
+		return out, errors.New("il servizio deve essere https")
+	}
+	body, err := json.Marshal(struct {
+		MachineID string `json:"machineId"`
+	}{machineID})
+	if err != nil {
+		return out, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/v1/register/check", bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Authorization", "Bearer "+installToken)
+	req.Header.Set(HeaderCurrentHostToken, currentHostToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(protocol.HeaderSchema, protocol.SchemaVersion)
+	hc := c.HTTPClient
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return out, fmt.Errorf("verifica: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return out, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Un nginx o un backend che non conoscono la verifica rispondono 404 (anche con una pagina
+		// HTML): non è un rifiuto del contratto, è «non disponibile».
+		var e struct {
+			Code string `json:"code"`
+		}
+		if resp.StatusCode == http.StatusNotFound || json.Unmarshal(raw, &e) != nil || e.Code == "" {
+			return out, fmt.Errorf("%w (HTTP %d)", ErrCheckUnavailable, resp.StatusCode)
+		}
+		return out, &APIError{Status: resp.StatusCode, Code: e.Code}
+	}
+	if err := protocol.DecodeStrict(raw, &out); err != nil {
+		return CheckResult{}, fmt.Errorf("%w: risposta non valida (%v)", ErrCheckUnavailable, err)
+	}
+	switch {
+	case out.Result == CheckSameTenant && out.SameMachine != nil:
+	case out.Result == CheckNotRegistered && out.SameMachine == nil:
+	default:
+		return CheckResult{}, fmt.Errorf("%w: risposta fuori contratto", ErrCheckUnavailable)
 	}
 	return out, nil
 }
