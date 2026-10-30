@@ -36,6 +36,7 @@ MT_DEFAULT_SERVER=https://connect.monsterterminal.com
 
 # Stato della corsa (riempito da parse_args).
 MT_USER=$MT_DEFAULT_USER
+MT_USER_SET=no
 MT_ACCEPT_ROOT=no
 MT_AUTO_UPDATE=yes
 MT_CATALOG=yes
@@ -60,7 +61,8 @@ uso: sh install.sh [opzioni]        (il token di installazione in MONSTERTERMINA
   --user root             solo con --i-accept-root o conferma interattiva (ADR 0409 D5)
   --no-auto-update        aggiornamenti automatici spenti su questo host (ADR 0409 D6)
   --no-catalog            installazione dal catalogo spenta su questo host (ADR 0409 D7)
-  --replace               sostituisce l'host già registrato su questa macchina (register -replace)
+  --replace               sostituisce l'host già registrato su questa macchina (register -replace),
+                          solo nello stesso spazio di lavoro (ADR 0409 A2)
   --server URL            istanza diversa da https://connect.monsterterminal.com (prove)
   --releases-url URL      base https da cui scaricare il rilascio, al posto di GitHub (banchi di
                           prova); la firma resta verificata con la chiave scritta nello script
@@ -72,6 +74,28 @@ USAGE
 }
 
 # ---------- funzioni pure (coperte da install_test.sh) ----------
+
+# Utente dell'installazione esistente, dalla unit systemd ($1): il valore di User=, «root» se la unit
+# non lo porta, niente se la unit non esiste. Un solo connettore per server (ADR 0409 A2).
+unit_user() {
+	[ -f "$1" ] || return 0
+	u=$(sed -n 's/^User=//p' "$1" | head -n 1)
+	printf '%s\n' "${u:-root}"
+}
+
+# Azione dopo `register -check` (ADR 0409 A2): $1 codice di uscita, $2 stdout, $3 --replace (yes|no).
+# update | replace | replace-new | stop-not-registered | stop-other-tenant | stop-unavailable | stop-error
+check_action() {
+	case "$1:$2:$3" in
+	"0:same-tenant same-machine:no" | "0:same-tenant other-machine:no") echo update ;;
+	"0:same-tenant same-machine:yes") echo replace ;;
+	"0:same-tenant other-machine:yes" | "0:not-registered:yes") echo replace-new ;;
+	"0:not-registered:no") echo stop-not-registered ;;
+	4:*) echo stop-other-tenant ;;
+	5:*) echo stop-unavailable ;;
+	*) echo stop-error ;;
+	esac
+}
 
 # Il token ha la forma dei token di installazione del backend (connector-tokens.ts): mti_ + base64url.
 valid_install_token() {
@@ -111,9 +135,13 @@ parse_args() {
 		--user)
 			[ $# -ge 2 ] || usage_die "--user vuole un nome"
 			MT_USER=$2
+			MT_USER_SET=yes
 			shift
 			;;
-		--user=*) MT_USER=${1#--user=} ;;
+		--user=*)
+			MT_USER=${1#--user=}
+			MT_USER_SET=yes
+			;;
 		--i-accept-root) MT_ACCEPT_ROOT=yes ;;
 		--no-auto-update) MT_AUTO_UPDATE=no ;;
 		--no-catalog) MT_CATALOG=no ;;
@@ -307,6 +335,42 @@ confirm_root() {
 	fi
 }
 
+# Server già registrato (token dell'host presente): prima di toccare qualunque cosa, un solo
+# connettore per server e la verifica non consumante dello spazio di lavoro col binario appena
+# verificato (ADR 0409 A2). Il token di installazione passa sullo stdin del solo processo.
+check_existing() {
+	[ -s "$MT_TOKEN_FILE" ] || return 0
+	existing=$(unit_user "$MT_UNIT")
+	if [ -n "$existing" ]; then
+		if [ "$MT_USER_SET" = yes ] && [ "$MT_USER" != "$existing" ]; then
+			die "su questo server il connettore è già installato per l'utente $existing: ce ne può essere uno solo. Non modifico nulla. Per cambiare utente: sh install.sh --uninstall, poi revoca l'host dalla UI e reinstalla."
+		fi
+		MT_USER=$existing
+	fi
+	msg "Server già registrato: verifico a quale spazio di lavoro appartiene…"
+	chmod 0700 "$MT_TMP/$MT_ASSET"
+	rc=0
+	out=$(printf '%s\n' "$MT_TOKEN" | env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin "$MT_TMP/$MT_ASSET" register -check \
+		-server "$MT_SERVER" -token-file "$MT_TOKEN_FILE" -state-dir "$MT_STATE" 2>"$MT_TMP/check.err") || rc=$?
+	case $(check_action "$rc" "$out" "$MT_REPLACE") in
+	update) msg "Server già registrato per questo spazio di lavoro: aggiorno senza registrare di nuovo." ;;
+	replace) msg "Sostituisco l'host di questo server: il precedente sarà revocato." ;;
+	replace-new) msg "Registro un host nuovo per questo server; l'eventuale registrazione precedente non viene revocata." ;;
+	stop-not-registered)
+		die "la registrazione di questo server non è più valida (host revocato): non modifico nulla. Rilancia con --replace e un token nuovo."
+		;;
+	stop-other-tenant)
+		die "questo server è già registrato per un altro spazio di lavoro: non modifico nulla. Per spostarlo, revocalo da quello spazio e rilancia con --replace."
+		;;
+	stop-unavailable)
+		die "il servizio di MonsterTerminal non può ancora verificare a quale spazio di lavoro appartiene questo server: non modifico nulla. Riprova più tardi o scrivi a support@monsterterminal.com."
+		;;
+	*)
+		die "verifica dello spazio di lavoro non riuscita: non modifico nulla. $(tail -n 1 "$MT_TMP/check.err" 2>/dev/null)"
+		;;
+	esac
+}
+
 ensure_user() {
 	if [ "$MT_USER" = root ]; then
 		MT_HOME=/root
@@ -378,8 +442,8 @@ install_files() {
 # Registrazione come l'utente del connettore. Il token passa sullo standard input del solo processo
 # register (la pipe, non lo stdin di sh, che è lo script stesso); env -i toglie l'ambiente di root.
 register_host() {
+	# Già registrato e nessun --replace: check_existing ha verificato lo spazio e lo ha già detto.
 	if [ -s "$MT_TOKEN_FILE" ] && [ "$MT_REPLACE" = no ]; then
-		msg "Host già registrato ($MT_TOKEN_FILE presente): aggiorno senza registrare di nuovo (--replace per sostituirlo)."
 		return 0
 	fi
 	set -- "$MT_BIN" register -server "$MT_SERVER" -token-file "$MT_TOKEN_FILE" -state-dir "$MT_STATE"
@@ -463,6 +527,7 @@ main() {
 	# Prima il rilascio verificato, poi l'utente: con una firma non valida non deve restare nulla
 	# sulla macchina, nemmeno un utente (rilievo del banco 2, 20/10).
 	download_release
+	check_existing
 	ensure_user
 	install_files
 	register_host

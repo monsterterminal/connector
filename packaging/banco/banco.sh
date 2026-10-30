@@ -7,9 +7,10 @@
 #   banco.sh up         chiavi, certificati, build, rilascio firmato, rete e i tre container
 #   banco.sh install    il comando di una riga nel container host + asserzioni (B2, B3, B7, B8)
 #   banco.sh negative   firma sbagliata, token malformato, token sconosciuto (B10) ⇒ nessuna installazione
+#   banco.sh spazi      dopo install: un altro spazio di lavoro non prende il server (ADR 0409 A2)
 #   banco.sh uninstall  --uninstall --purge ⇒ servizio, binario, configurazione e stato assenti
 #   banco.sh status     lo status-file del backend finto
-#   banco.sh all        up, negative, install, uninstall (lascia il banco in piedi per guardarlo)
+#   banco.sh all        up, negative, install, spazi, uninstall (lascia il banco in piedi per guardarlo)
 #   banco.sh down       rimuove container, rete, immagini mt-banco-* e i file di lavoro (non la cache go)
 #
 # Variabili: BANCO_HOME (default ~/mt-banco), BANCO_VERSION (0.0.0-banco), BANCO_ASSETS (cartella con
@@ -209,7 +210,8 @@ start_containers() {
 	docker run -d --name "$FAKE_C" --network "$NET" --network-alias connect.banco \
 		--user "$(id -u):$(id -g)" -v "$CERTS:/certs:ro" -v "$STATUS:/status" \
 		"$FAKE_IMG" -listen :8443 -tls-cert /certs/connect.banco.crt -tls-key /certs/connect.banco.key \
-		-tokens 3 -token-ttl 1h -token-file /status/install-tokens -status-file /status/status.json >/dev/null
+		-tokens 3 -token-ttl 1h -token-file /status/install-tokens -status-file /status/status.json \
+		-other-tokens 1 -other-token-file /status/other-tokens >/dev/null
 
 	# --privileged: ammesso SOLO perché il container è usa-e-getta, senza porte pubblicate, e systemd
 	# come PID 1 lo richiede; --cgroupns=host monta anche il cgroup della macchina (fallback).
@@ -378,6 +380,54 @@ cmd_install() {
 
 # ---------- negative ----------
 
+# ADR 0409 A2 (decisione BOSS 2026-10-29): dopo `install` l'host è registrato nello spazio Acme. Uno
+# spazio diverso non lo prende né con il comando normale né con --replace; un --user diverso da quello
+# dell'installazione si rifiuta; lo stesso spazio aggiorna senza registrare. Nessun tentativo tocca
+# file, servizio o token.
+cmd_spazi() {
+	require_up
+	need python3
+	local other before after regs rc
+	other=$(sed -n 1p "$STATUS/other-tokens")
+	[ -n "$other" ] || die "token dell'altro spazio assente in $STATUS/other-tokens"
+	hx test -s /var/lib/monsterterminal/host-token || die "host non registrato: prima banco.sh install"
+	before=$(snapshot_host)
+	regs=$(status_field registrations)
+
+	step "S1 — un altro spazio lancia il comando di una riga sullo stesso server"
+	rc=0
+	run_install "$other" "$STATUS/spazi-1.log" || rc=$?
+	if [ "$rc" -ne 0 ]; then ok "install.sh si ferma (uscita $rc)"; else fail "install.sh è uscito con 0"; fi
+	assert "messaggio: già registrato per un altro spazio di lavoro" grep -q "già registrato per un altro spazio di lavoro" "$STATUS/spazi-1.log"
+
+	step "S2 — lo stesso, con --replace"
+	rc=0
+	run_install "$other" "$STATUS/spazi-2.log" --replace || rc=$?
+	if [ "$rc" -ne 0 ]; then ok "install.sh si ferma (uscita $rc)"; else fail "install.sh è uscito con 0"; fi
+	assert "messaggio: già registrato per un altro spazio di lavoro" grep -q "già registrato per un altro spazio di lavoro" "$STATUS/spazi-2.log"
+	assert "il token dell'altro spazio non compare nelle trascrizioni" sh -c "! grep -qF '$other' '$STATUS/spazi-1.log' '$STATUS/spazi-2.log'"
+
+	step "S3 — lo stesso spazio con un --user diverso da quello installato"
+	rc=0
+	run_install "$(token_n 2)" "$STATUS/spazi-3.log" --user root --i-accept-root || rc=$?
+	if [ "$rc" -ne 0 ]; then ok "install.sh si ferma (uscita $rc)"; else fail "install.sh è uscito con 0"; fi
+	assert "messaggio: già installato per l'utente monsterterminal" grep -q "già installato per l'utente monsterterminal" "$STATUS/spazi-3.log"
+
+	after=$(snapshot_host)
+	if [ "$before" = "$after" ]; then ok "binario, configurazione, unit e token dell'host intatti"; else fail "la macchina è cambiata: $after"; fi
+	assert "nessuna registrazione nuova dal backend" test "$(status_field registrations)" = "$regs"
+	assert "servizio ancora attivo" hx systemctl is-active --quiet monsterterminal-connector
+
+	step "S4 — lo stesso spazio, comando normale: aggiorna senza registrare"
+	rc=0
+	run_install "$(token_n 2)" "$STATUS/spazi-4.log" || rc=$?
+	if [ "$rc" -eq 0 ]; then ok "install.sh è uscito con 0"; else fail "install.sh è uscito con $rc"; fi
+	assert "messaggio: registrato per questo spazio, aggiorno" grep -q "già registrato per questo spazio di lavoro" "$STATUS/spazi-4.log"
+	assert "nessuna registrazione nuova dal backend" test "$(status_field registrations)" = "$regs"
+	assert "token dell'host invariato" test "$(hx sha256sum /var/lib/monsterterminal/host-token)" = "$(printf '%s\n' "$before" | grep host-token)"
+	verdict "spazi"
+}
+
 snapshot_host() {
 	hx_sh 'for f in /usr/local/bin/monsterterminal-connector /etc/monsterterminal/connector.conf /etc/systemd/system/monsterterminal-connector.service /var/lib/monsterterminal/host-token; do if [ -e "$f" ]; then sha256sum "$f"; else echo "assente $f"; fi; done'
 }
@@ -503,6 +553,7 @@ case "${1:-}" in
 up) cmd_up ;;
 install) cmd_install ;;
 negative) cmd_negative ;;
+spazi) cmd_spazi ;;
 uninstall) cmd_uninstall ;;
 status) cmd_status ;;
 all)
@@ -511,6 +562,8 @@ all)
 	cmd_negative
 	fails=0
 	cmd_install
+	fails=0
+	cmd_spazi
 	fails=0
 	cmd_uninstall
 	msg ""

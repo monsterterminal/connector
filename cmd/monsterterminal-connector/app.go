@@ -40,6 +40,10 @@ const (
 	exitError   = 1
 	exitUsage   = 2
 	exitRevoked = 3
+	// register -check (ADR 0409 A2): l'host registrato qui è di un altro spazio di lavoro, oppure il
+	// servizio non sa ancora verificarlo. install.sh si ferma in entrambi i casi senza toccare nulla.
+	exitOtherTenant      = 4
+	exitCheckUnavailable = 5
 )
 
 // app raccoglie le dipendenze del comando, sostituibili nei test.
@@ -88,6 +92,7 @@ func (a app) run(ctx context.Context, args []string) int {
 	stateDir := fs.String("state-dir", defaultStateDir, "cartella del giornale degli eventi")
 	configFile := fs.String("config", defaultConfig, "run: impostazioni decise dal cliente sull'host (§1.11); se manca valgono i default")
 	replace := fs.Bool("replace", false, "register: sostituisce l'host registrato su questa macchina (serve il suo token attuale)")
+	check := fs.Bool("check", false, "register: verifica, senza consumare il token, se l'host registrato qui è dello spazio del token di installazione")
 	yes := fs.Bool("yes", false, "hooks install: risponde sì alla domanda di consenso senza terminale")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitUsage
@@ -124,7 +129,15 @@ func (a app) run(ctx context.Context, args []string) int {
 	var err error
 	switch cmd {
 	case "register":
-		err = a.cmdRegister(ctx, *server, *tokenFile, *stateDir, *replace)
+		if *check {
+			if *replace {
+				fmt.Fprintln(a.stderr, "register: -check e -replace non vanno insieme")
+				return exitUsage
+			}
+			err = a.cmdRegisterCheck(ctx, *server, *tokenFile)
+		} else {
+			err = a.cmdRegister(ctx, *server, *tokenFile, *stateDir, *replace)
+		}
 	case "run":
 		err = a.cmdRun(ctx, log, *server, *tokenFile, *stateDir, *configFile)
 	case "version":
@@ -135,9 +148,16 @@ func (a app) run(ctx context.Context, args []string) int {
 		a.usage()
 		return exitUsage
 	}
+	var apiErr *register.APIError
 	switch {
 	case err == nil, errors.Is(err, context.Canceled):
 		return exitOK
+	case errors.As(err, &apiErr) && apiErr.Code == "HOST_OTHER_TENANT":
+		log.Error("terminato con errore", "errore", err.Error())
+		return exitOtherTenant
+	case errors.Is(err, register.ErrCheckUnavailable):
+		log.Error("terminato con errore", "errore", err.Error())
+		return exitCheckUnavailable
 	case errors.Is(err, transport.ErrRevoked), errors.Is(err, transport.ErrTokenInvalid):
 		log.Error("collegamento terminato: serve una nuova registrazione", "motivo", err.Error())
 		return exitRevoked
@@ -148,7 +168,7 @@ func (a app) run(ctx context.Context, args []string) int {
 }
 
 func (a app) usage() {
-	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace]|run [-config FILE]|version|hooks install [-yes]|hooks remove [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
+	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace|-check]|run [-config FILE]|version|hooks install [-yes]|hooks remove [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
 }
 
 func (a app) client(timeout time.Duration) *http.Client {
@@ -222,6 +242,41 @@ func (a app) cmdRegister(ctx context.Context, server, tokenFile, stateDir string
 		fmt.Fprintf(a.stdout, "Host sostituito per %s (nuovo id %s); il precedente è revocato.\n", resp.TenantLabel, resp.HostID)
 	} else {
 		fmt.Fprintf(a.stdout, "Host registrato per %s (id %s).\n", resp.TenantLabel, resp.HostID)
+	}
+	return nil
+}
+
+// cmdRegisterCheck stampa su una riga l'esito della verifica non consumante (ADR 0409 A2), per
+// install.sh: «same-tenant same-machine», «same-tenant other-machine» o «not-registered». Un host di
+// un altro spazio esce con exitOtherTenant, un servizio che non sa verificare con exitCheckUnavailable.
+func (a app) cmdRegisterCheck(ctx context.Context, server, tokenFile string) error {
+	if !register.TokenExists(tokenFile) {
+		return fmt.Errorf("-check: nessun host registrato su questa macchina (%s non esiste)", tokenFile)
+	}
+	current, err := register.LoadToken(tokenFile)
+	if err != nil {
+		return err
+	}
+	tok, err := a.readInstallToken()
+	if err != nil {
+		return err
+	}
+	hi, err := a.collect()
+	if err != nil {
+		return err
+	}
+	c := register.Client{BaseURL: server, HTTPClient: a.client(30 * time.Second)}
+	res, err := c.Check(ctx, tok, current, hi.MachineID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case res.Result == register.CheckNotRegistered:
+		fmt.Fprintln(a.stdout, register.CheckNotRegistered)
+	case *res.SameMachine:
+		fmt.Fprintln(a.stdout, register.CheckSameTenant+" same-machine")
+	default:
+		fmt.Fprintln(a.stdout, register.CheckSameTenant+" other-machine")
 	}
 	return nil
 }

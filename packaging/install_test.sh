@@ -56,6 +56,24 @@ check "script non rilasciato senza --version rifiutato" '! (parse_args) 2>/dev/n
 check "script non rilasciato con --version accettato" '(parse_args --version 0.2.0) 2>/dev/null'
 MT_VERSION=0.2.0
 
+# --- un server, uno spazio di lavoro (ADR 0409 A2) ---
+MT_USER_SET=no
+parse_args
+check "senza --user l'utente non è esplicito" '[ "$MT_USER_SET" = no ]'
+parse_args --user=mario
+check "--user=NOME è esplicito" '[ "$MT_USER_SET" = yes ] && [ "$MT_USER" = mario ]'
+MT_USER=monsterterminal MT_USER_SET=no
+check "check: stesso spazio, senza --replace → aggiorna" '[ "$(check_action 0 "same-tenant same-machine" no)" = update ]'
+check "check: stesso spazio, altra macchina, senza --replace → aggiorna" '[ "$(check_action 0 "same-tenant other-machine" no)" = update ]'
+check "check: stesso spazio e macchina con --replace → sostituisce" '[ "$(check_action 0 "same-tenant same-machine" yes)" = replace ]'
+check "check: stesso spazio, altra macchina con --replace → host nuovo" '[ "$(check_action 0 "same-tenant other-machine" yes)" = replace-new ]'
+check "check: host revocato con --replace → host nuovo" '[ "$(check_action 0 not-registered yes)" = replace-new ]'
+check "check: host revocato senza --replace → si ferma" '[ "$(check_action 0 not-registered no)" = stop-not-registered ]'
+check "check: altro spazio (uscita 4) → si ferma, anche con --replace" '[ "$(check_action 4 "" no)" = stop-other-tenant ] && [ "$(check_action 4 "" yes)" = stop-other-tenant ]'
+check "check: verifica non disponibile (uscita 5) → si ferma" '[ "$(check_action 5 "" yes)" = stop-unavailable ]'
+check "check: uscita 0 con un esito sconosciuto → si ferma" '[ "$(check_action 0 "boh" no)" = stop-error ]'
+check "check: errore generico → si ferma" '[ "$(check_action 1 "" no)" = stop-error ]'
+
 # --- root: conferma esplicita (D5) ---
 MT_USER=root MT_ACCEPT_ROOT=no
 check "root senza terminale e senza flag rifiutato" '! (confirm_root </dev/null) 2>/dev/null'
@@ -73,6 +91,13 @@ check "unit: le sessioni tmux sopravvivono (KillMode=process, D4)" 'printf "%s" 
 check "unit: niente PrivateTmp (socket tmux condiviso)" '! printf "%s" "$unit" | grep -q "PrivateTmp"'
 unitroot=$(render_unit root /root https://connect.monsterterminal.com)
 check "unit root: senza User=" '! printf "%s" "$unitroot" | grep -q "^User="'
+uf=$(mktemp)
+printf '%s\n' "$unit" >"$uf"
+check "utente dell'installazione esistente dalla unit" '[ "$(unit_user "$uf")" = mario ]'
+printf '%s\n' "$unitroot" >"$uf"
+check "unit senza User= → root" '[ "$(unit_user "$uf")" = root ]'
+check "nessuna unit → nessun utente" '[ -z "$(unit_user /nessuna/unit)" ]'
+rm -f "$uf"
 
 conf=$(render_conf mario no yes https://connect.monsterterminal.com 0.2.0)
 check "conf: auto_update e catalog_install (§1.11)" 'printf "%s" "$conf" | grep -q "^auto_update=no$" && printf "%s" "$conf" | grep -q "^catalog_install=yes$"'
