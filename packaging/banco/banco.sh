@@ -354,11 +354,20 @@ cmd_install() {
 	assert "il servizio gira come monsterterminal" hx_sh 'test "$(ps -o user= -p "$(systemctl show -p MainPID --value monsterterminal-connector)")" = monsterterminal'
 	assert "nessun file temporaneo del download rimasto in /tmp" hx_sh 'test -z "$(ls -d /tmp/tmp.* 2>/dev/null)"'
 
-	step "B7 — secondo install.sh senza --replace: registrazione saltata"
+	step "B7 — il token già usato non basta più per aggiornare (ADR 0409 A2: la verifica lo vuole valido)"
+	local before_b7
+	before_b7=$(snapshot_host)
 	rc=0
-	run_install "$tok" "$STATUS/install-2.log" || rc=$?
+	run_install "$tok" "$STATUS/install-2a.log" || rc=$?
+	if [ "$rc" -ne 0 ]; then ok "install.sh si ferma (uscita $rc)"; else fail "install.sh è uscito con 0"; fi
+	assert "spiega che il token è già usato" grep -q "INSTALL_TOKEN_INVALID" "$STATUS/install-2a.log"
+	assert "macchina intatta" test "$(snapshot_host)" = "$before_b7"
+
+	step "B7 — secondo install.sh senza --replace, token nuovo: registrazione saltata"
+	rc=0
+	run_install "$(token_n 2)" "$STATUS/install-2.log" || rc=$?
 	if [ "$rc" -eq 0 ]; then ok "install.sh è uscito con 0"; else fail "install.sh è uscito con $rc"; fi
-	assert "«Host già registrato» stampato" grep -q "Host già registrato" "$STATUS/install-2.log"
+	assert "«già registrato per questo spazio di lavoro» stampato" grep -q "già registrato per questo spazio di lavoro" "$STATUS/install-2.log"
 	assert "status-file: ancora 1 registrazione" test "$(status_field registrations)" = 1
 	assert "servizio ancora attivo" hx_sh 'test "$(systemctl is-active monsterterminal-connector)" = active'
 
@@ -383,7 +392,7 @@ cmd_install() {
 # ADR 0409 A2 (decisione BOSS 2026-10-29): dopo `install` l'host è registrato nello spazio Acme. Uno
 # spazio diverso non lo prende né con il comando normale né con --replace; un --user diverso da quello
 # dell'installazione si rifiuta; lo stesso spazio aggiorna senza registrare. Nessun tentativo tocca
-# file, servizio o token.
+# file, servizio o token. Usa il token 3, che negative non consuma (ogni sua prova fallisce prima).
 cmd_spazi() {
 	require_up
 	need python3
@@ -409,7 +418,7 @@ cmd_spazi() {
 
 	step "S3 — lo stesso spazio con un --user diverso da quello installato"
 	rc=0
-	run_install "$(token_n 2)" "$STATUS/spazi-3.log" --user root --i-accept-root || rc=$?
+	run_install "$(token_n 3)" "$STATUS/spazi-3.log" --user root --i-accept-root || rc=$?
 	if [ "$rc" -ne 0 ]; then ok "install.sh si ferma (uscita $rc)"; else fail "install.sh è uscito con 0"; fi
 	assert "messaggio: già installato per l'utente monsterterminal" grep -q "già installato per l'utente monsterterminal" "$STATUS/spazi-3.log"
 
@@ -420,7 +429,7 @@ cmd_spazi() {
 
 	step "S4 — lo stesso spazio, comando normale: aggiorna senza registrare"
 	rc=0
-	run_install "$(token_n 2)" "$STATUS/spazi-4.log" || rc=$?
+	run_install "$(token_n 3)" "$STATUS/spazi-4.log" || rc=$?
 	if [ "$rc" -eq 0 ]; then ok "install.sh è uscito con 0"; else fail "install.sh è uscito con $rc"; fi
 	assert "messaggio: registrato per questo spazio, aggiorno" grep -q "già registrato per questo spazio di lavoro" "$STATUS/spazi-4.log"
 	assert "nessuna registrazione nuova dal backend" test "$(status_field registrations)" = "$regs"
