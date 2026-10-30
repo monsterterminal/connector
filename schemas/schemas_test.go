@@ -18,10 +18,11 @@ import (
 // Versioni degli schemi nel repository: 0.1.0 (approvata il 2026-10-12), 0.2.0 (aperta il 2026-10-16,
 // spec §1.15), 0.3.0 (aperta il 2026-10-17, spec §2.12: deadline in request.context) e 0.4.0 (aperta il
 // 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json), 0.5.0 (2026-10-19, ADR 0410 A2: le
-// domande dell'agente) 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico) e 0.7.0 (2026-10-27, ADR 0409 A1.5:
-// DragMeHere sugli host). Ogni test gira
+// domande dell'agente) 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico) 0.7.0 (2026-10-27, ADR 0409 A1.5:
+// DragMeHere sugli host) e 0.8.0 (2026-10-30, ADR 0409 A2: un server non passa a un altro spazio di
+// lavoro; HOST_OTHER_TENANT e POST /v1/register/check). Ogni test gira
 // su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0"}
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -89,6 +90,18 @@ var wantMessages = map[string]map[string][]string{
 	// 0.7.0 (2026-10-27, ADR 0409 A1.5): DragMeHere sugli host, file.put e file.cancel verso ~/dragmehere
 	// (decisione BOSS 2026-10-27: niente navigazione delle cartelle, quindi niente dir.list).
 	"0.7.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
+			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
+			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
+			"session.interrupt.result", "session.kill.result", "session.opened", "session.refresh.result",
+			"session.rename.result", "session.zoom.result", "sessions.list.result", "update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "file.cancel",
+			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
+			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
+			"session.zoom", "sessions.list", "update.available", "welcome"},
+	},
+	// 0.8.0 (2026-10-30, ADR 0409 A2): nessun messaggio nuovo, solo HTTP.
+	"0.8.0": {
 		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
 			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
 			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
@@ -682,6 +695,84 @@ func TestZeroSetteEstendeZeroSei(t *testing.T) {
 	}
 	if len(cur) != len(old)+4 {
 		t.Errorf("0.7.0 aggiunge %d file, attesi 4", len(cur)-len(old))
+	}
+}
+
+// TestZeroOttoEstendeZeroSette: la 0.8.0 (ADR 0409 A2, decisione BOSS 2026-10-29) non toglie nulla alla
+// 0.7.0 e aggiunge solo il codice HOST_OTHER_TENANT a http/error.json e la verifica non consumante
+// POST /v1/register/check: corpo {machineId}; risposta same-tenant con sameMachine oppure not-registered,
+// in due oggetti chiusi. Ogni altro file resta byte per byte uguale.
+func TestZeroOttoEstendeZeroSette(t *testing.T) {
+	old, cur := loadAll(t, "0.7.0"), loadAll(t, "0.8.0")
+	props := func(n any) map[string]any {
+		m, _ := n.(map[string]any)
+		p, _ := m["properties"].(map[string]any)
+		return p
+	}
+	codes := func(doc map[string]any) []string {
+		var out []string
+		for _, c := range props(doc)["code"].(map[string]any)["enum"].([]any) {
+			out = append(out, c.(string))
+		}
+		return out
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.8.0", rel)
+			continue
+		}
+		if rel == "http/error.json" {
+			oc, cc := codes(o), codes(c)
+			for _, k := range oc {
+				if !slices.Contains(cc, k) {
+					t.Errorf("http/error.json: codice %s sparito", k)
+				}
+			}
+			if !slices.Contains(cc, "HOST_OTHER_TENANT") || len(cc) != len(oc)+1 {
+				t.Errorf("http/error.json 0.8.0: atteso il solo HOST_OTHER_TENANT in più, trovati %v", cc)
+			}
+			continue
+		}
+		if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+			t.Errorf("%s: 0.8.0 cambia un file che doveva restare uguale alla 0.7.0", rel)
+		}
+	}
+	req := cur["http/register-check-request.json"]
+	if req == nil {
+		t.Fatal("manca http/register-check-request.json")
+	}
+	if r, _ := req["required"].([]any); len(r) != 1 || r[0] != "machineId" || len(props(req)) != 1 {
+		t.Errorf("register-check: il corpo è il solo machineId, trovato %v", props(req))
+	}
+	if props(req)["machineId"].(map[string]any)["pattern"] != props(cur["http/register-request.json"])["machineId"].(map[string]any)["pattern"] {
+		t.Error("register-check: machineId con una regola diversa da register")
+	}
+	res := cur["http/register-check-response.json"]
+	if res == nil {
+		t.Fatal("manca http/register-check-response.json")
+	}
+	alts, _ := res["oneOf"].([]any)
+	got := map[string][]string{}
+	for _, a := range alts {
+		m := a.(map[string]any)
+		if m["additionalProperties"] != false {
+			t.Error("register-check: risposta non chiusa")
+		}
+		res := props(m)["result"].(map[string]any)["const"].(string)
+		var req []string
+		for _, k := range m["required"].([]any) {
+			req = append(req, k.(string))
+		}
+		sort.Strings(req)
+		got[res] = req
+	}
+	if len(got) != 2 || !slices.Equal(got["same-tenant"], []string{"result", "sameMachine"}) ||
+		!slices.Equal(got["not-registered"], []string{"result"}) {
+		t.Errorf("register-check: risposte %v, attese same-tenant{result,sameMachine} e not-registered{result}", got)
+	}
+	if len(cur) != len(old)+2 {
+		t.Errorf("0.8.0 aggiunge %d file, attesi 2", len(cur)-len(old))
 	}
 }
 

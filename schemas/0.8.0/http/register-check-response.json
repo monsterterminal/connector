@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/http/register-check-response.json",
+  "title": "POST /v1/register/check — risposta 200",
+  "description": "same-tenant: l'host del token attuale è valido, non revocato e dello stesso spazio del token di installazione; sameMachine dice se ha lo stesso machineId del corpo (con --replace: sostituzione se true, host nuovo senza revoca se false). not-registered: host sconosciuto o revocato. Un host di un altro spazio è 409 HOST_OTHER_TENANT (http/error.json), senza alcun dato di quello spazio.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "const": "same-tenant"
+        },
+        "sameMachine": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "result",
+        "sameMachine"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "const": "not-registered"
+        }
+      },
+      "required": [
+        "result"
+      ]
+    }
+  ]
+}

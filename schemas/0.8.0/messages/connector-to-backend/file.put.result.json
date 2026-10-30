@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.8.0/messages/connector-to-backend/file.put.result.json",
+  "title": "file.put.result",
+  "description": "Esito di un blocco; con done anche il percorso relativo alla home (dragmehere/…), la dimensione e lo sha256 del file scritto (ADR 0409 A1.5, schemi 0.7.0)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "file.put.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transferId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "chunkIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 52428800
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 52428800
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "transferId",
+        "chunkIndex",
+        "received",
+        "done"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body",
+    "re"
+  ]
+}

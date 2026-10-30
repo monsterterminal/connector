@@ -32,7 +32,7 @@ func TestDragMeHereDalCapoAllAltro(t *testing.T) {
 	t.Cleanup(r.cancel)
 	waitHello(t, s)
 	waitWelcome(t, r)
-	if got := s.DeclaredSchemas(); len(got) == 0 || got[len(got)-1] != "0.7.0" {
+	if got := s.DeclaredSchemas(); len(got) == 0 || got[len(got)-1] != "0.8.0" {
 		t.Fatalf("header X-MonsterTerminal-Schema %v, atteso 0.7.0", got)
 	}
 	reply := func(msgID string) protocol.Envelope {
