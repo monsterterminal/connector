@@ -243,9 +243,20 @@ revocato e quello nuovo ha un altro identificativo. Per compilare dai sorgenti:
 
 Al tag `vX.Y.Z` la CI compila in modo riproducibile, produce `SHA256SUMS`, i manifest degli
 aggiornamenti (§1.10) e `install.sh`, e crea una release **in bozza**. La CI non firma mai: la chiave
-privata non sta su GitHub né sui server di MonsterTerminal (§1.17). Chi custodisce la chiave ricompila
-in locale, confronta gli hash, firma e pubblica con `scripts/firma-rilascio.sh`. Come verificare un
-rilascio a mano: [`SECURITY.md`](SECURITY.md).
+privata non sta su GitHub né sui server di MonsterTerminal (§1.17). Chi custodisce la chiave firma e
+pubblica dal proprio PC con un comando solo, `firma-rilascio X.Y.Z` ([`scripts/firma-rilascio.sh`](scripts/firma-rilascio.sh)):
+lo script scarica la bozza, clona il tag e ricompila con la toolchain di `go.mod`, confronta gli hash con
+quelli della CI, chiede la passphrase della chiave una volta a video, firma, verifica ogni firma, la
+carica e pubblica dopo una conferma. Come verificare un rilascio a mano: [`SECURITY.md`](SECURITY.md).
+
+Installazione sul PC di chi firma (Linux o WSL, con `gh` autenticato, `git`, `go` e OpenSSL 3), da un
+commit preciso e mai da `main`, confrontando l'impronta con quella comunicata insieme al commit:
+
+```
+curl -fsSL https://raw.githubusercontent.com/monsterterminal/connector/<commit>/scripts/firma-rilascio.sh -o ~/bin/firma-rilascio
+chmod 0755 ~/bin/firma-rilascio && sha256sum ~/bin/firma-rilascio
+firma-rilascio 0.6.0   # la chiave di default è ~/chiavi-monsterterminal/mt-updates-2026.key
+```
 
 ## Sicurezza e contributi
 

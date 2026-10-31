@@ -31,10 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck devscripts dash
-      - run: shellcheck -s sh packaging/install.sh packaging/install_test.sh scripts/firma-rilascio.sh
-      - run: checkbashisms packaging/install.sh packaging/install_test.sh scripts/firma-rilascio.sh
+      - run: shellcheck -s sh packaging/install.sh packaging/install_test.sh scripts/firma-rilascio.sh scripts/firma-rilascio_test.sh
+      - run: checkbashisms packaging/install.sh packaging/install_test.sh scripts/firma-rilascio.sh scripts/firma-rilascio_test.sh
       - run: dash packaging/install_test.sh
       - run: bash packaging/install_test.sh
+      - run: dash scripts/firma-rilascio_test.sh
 
   build:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
