@@ -8,6 +8,9 @@
 # gli hash non tornano.
 #
 #   sh scripts/firma-rilascio_test.sh
+#
+# Le prove sono stringhe passate a eval dentro check, come in packaging/install_test.sh.
+# shellcheck disable=SC2016
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 fails=0

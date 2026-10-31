@@ -73,7 +73,8 @@ gh release view "$TAG" --repo "$REPO" --json isDraft --jq '.isDraft' 2>/dev/null
 	|| die "la release $TAG non esiste o non è una bozza: si firma solo una bozza creata dalla CI"
 gh release download "$TAG" --repo "$REPO" --dir "$work/assets"
 (cd "$work/assets" && sha256sum -c --quiet SHA256SUMS) || die "gli asset scaricati non corrispondono a SHA256SUMS"
-say "   asset coerenti con SHA256SUMS: $(ls "$work/assets" | wc -l) file"
+set -- "$work/assets"/*
+say "   asset coerenti con SHA256SUMS: $# file"
 
 if [ "$REBUILD" = yes ]; then
 	say "== 2. Ricompilo $TAG in locale e confronto con gli hash della CI"
