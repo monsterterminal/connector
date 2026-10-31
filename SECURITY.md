@@ -49,7 +49,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 `mt-updates.pub` è la chiave pubblica PEM elencata qui sotto; `install.sh` la porta scritta dentro e fa
 le stesse due verifiche prima di installare. La chiave privata non sta su GitHub né sui server di
 MonsterTerminal: la CI crea solo release in bozza, la firma la mette chi custodisce la chiave
-(`scripts/firma-rilascio.sh`) dopo aver ricompilato in locale e confrontato gli hash.
+(`scripts/firma-rilascio.sh`, installato come `firma-rilascio`) dopo aver ricompilato in locale e
+confrontato gli hash.
 
 ### Chiavi pubbliche
 
