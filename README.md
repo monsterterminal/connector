@@ -63,7 +63,11 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   l'attach è `-r` e l'input del canale si scarta sull'host. Chiudere un canale, o perdere la
   connessione, stacca il client tmux: la sessione resta viva con gli agenti dentro. Dagli schemi 0.6.0 (ADR
   0409 A1.2) il backend può aprire un canale con `fitToPane` (la finestra tmux non si ridimensiona,
-  `session.opened` dichiara le dimensioni vere) e chiedere sette comandi, ognuno un verbo tmux fisso
+  `session.opened` dichiara le dimensioni vere); dagli schemi 0.9.0 (ADR 0409 A1.6) con `fitRows: "client"`
+  il canale prende le colonne della finestra e le righe del dispositivo, agganciato con `attach -f
+  ignore-size` (tmux ≥ 3.2), così un telefono non cambia mai la finestra per il computer aperto sulla
+  stessa sessione (con tmux più vecchio resta lo specchio largo, e `session.opened` non dichiara
+  `fitRows`). Il backend può chiedere sette comandi, ognuno un verbo tmux fisso
   sulla sessione dal nome validato: `session.refresh` (ridisegno del solo client del canale),
   `session.interrupt` (esce dalla copy-mode e manda C-c; mai da un canale in sola lettura),
   `session.buffer` (l'ultimo paste-buffer se ha al più 15 secondi, altrimenti `null`), `session.kill`,

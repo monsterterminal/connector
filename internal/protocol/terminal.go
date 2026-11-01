@@ -104,7 +104,16 @@ type SessionOpen struct {
 	Rows    int    `json:"rows"`
 	// FitToPane (schemi 0.6.0): il canale nasce con le dimensioni della finestra tmux, non con cols/rows.
 	FitToPane bool `json:"fitToPane,omitempty"`
+	// FitRows (schemi 0.9.0, ADR 0409 A1.6): "client" = colonne della finestra, righe del client, con
+	// il client tmux in ignore-size. Solo con FitToPane e Rows ≥ MinFitRows.
+	FitRows string `json:"fitRows,omitempty"`
 }
+
+// FitRowsClient è l'unico valore di fitRows (schemi 0.9.0); MinFitRows il minimo di rows con fitRows.
+const (
+	FitRowsClient = "client"
+	MinFitRows    = 5
+)
 
 // ErrSessionName distingue un nome di sessione fuori regola (risposta SESSION_NAME_INVALID).
 var ErrSessionName = errors.New("nome di sessione fuori regola")
@@ -126,6 +135,7 @@ func DecodeSessionOpen(body []byte) (SessionOpen, error) {
 		Cols      *int    `json:"cols"`
 		Rows      *int    `json:"rows"`
 		FitToPane *bool   `json:"fitToPane"`
+		FitRows   *string `json:"fitRows"`
 	}
 	if err := DecodeStrict(body, &m); err != nil {
 		return SessionOpen{}, err
@@ -136,6 +146,17 @@ func DecodeSessionOpen(body []byte) (SessionOpen, error) {
 	o := SessionOpen{Channel: *m.Channel, Session: *m.Session, Create: *m.Create, Mode: *m.Mode, Cols: *m.Cols, Rows: *m.Rows}
 	if m.FitToPane != nil {
 		o.FitToPane = *m.FitToPane
+	}
+	if m.FitRows != nil {
+		o.FitRows = *m.FitRows
+		switch {
+		case o.FitRows != FitRowsClient:
+			return o, fmt.Errorf("fitRows %q: %w", o.FitRows, ErrInvalid)
+		case !o.FitToPane:
+			return o, fmt.Errorf("fitRows senza fitToPane: %w", ErrInvalid)
+		case o.Rows < MinFitRows:
+			return o, fmt.Errorf("fitRows con %d righe, almeno %d: %w", o.Rows, MinFitRows, ErrInvalid)
+		}
 	}
 	if o.Mode != ModeView && o.Mode != ModeInteract {
 		return o, fmt.Errorf("modo %q: %w", o.Mode, ErrInvalid)
@@ -341,6 +362,8 @@ type SessionOpened struct {
 	Channel uint32 `json:"channel"`
 	Cols    int    `json:"cols"`
 	Rows    int    `json:"rows"`
+	// FitRows (schemi 0.9.0) è "client" solo se le righe del client sono state applicate davvero.
+	FitRows string `json:"fitRows,omitempty"`
 }
 
 // SessionClosed è il corpo di session.closed.

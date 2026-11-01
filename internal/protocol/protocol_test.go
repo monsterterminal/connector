@@ -86,11 +86,11 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"events/connector.restarted.json", ConnectorRestarted{}},
 		{"events/journal.truncated.json", JournalTruncated{}},
 		{"events/agent.state.json", AgentState{WaitingFor: "x", RequestID: "x"}},
-		{"messages/backend-to-connector/session.open.json", SessionOpen{FitToPane: true}},
+		{"messages/backend-to-connector/session.open.json", SessionOpen{FitToPane: true, FitRows: FitRowsClient}},
 		{"messages/backend-to-connector/session.resize.json", SessionResize{}},
 		{"messages/backend-to-connector/session.close.json", SessionClose{}},
 		{"messages/backend-to-connector/sessions.list.json", struct{}{}},
-		{"messages/connector-to-backend/session.opened.json", SessionOpened{}},
+		{"messages/connector-to-backend/session.opened.json", SessionOpened{FitRows: FitRowsClient}},
 		{"messages/connector-to-backend/session.closed.json", SessionClosed{}},
 		{"messages/connector-to-backend/sessions.list.result.json", SessionsListResult{}},
 		// Schemi 0.6.0 (ADR 0409 A1.2): i comandi del terminale unico e le risposte.
@@ -208,7 +208,7 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if int(put["size"].(map[string]any)["maximum"].(float64)) != MaxFileBytes || int(put["data"].(map[string]any)["maxLength"].(float64)) != MaxChunkBase64 {
 		t.Error("tetti di file.put: schema e Go divergono")
 	}
-	if Version != 1 || SchemaVersion != "0.8.0" {
+	if Version != 1 || SchemaVersion != "0.9.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }
