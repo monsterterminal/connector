@@ -470,7 +470,11 @@ install_service() {
 	chmod 0644 "$MT_UNIT.new"
 	mv -f "$MT_UNIT.new" "$MT_UNIT"
 	systemctl daemon-reload
-	systemctl enable --now "$MT_UNIT_NAME" >/dev/null 2>&1 || systemctl restart "$MT_UNIT_NAME"
+	# enable --now non riavvia un servizio già attivo: dopo un aggiornamento girerebbe ancora il binario
+	# vecchio fino al riavvio della macchina. Il riavvio è sempre esplicito; le sessioni tmux restano
+	# vive (KillMode=process, D4).
+	systemctl enable "$MT_UNIT_NAME" >/dev/null 2>&1 || true
+	systemctl restart "$MT_UNIT_NAME"
 	i=0
 	while [ $i -lt 30 ]; do
 		systemctl is-active --quiet "$MT_UNIT_NAME" && break
