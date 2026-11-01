@@ -20,9 +20,10 @@ import (
 // 2026-10-18, ADR 0418 D5: BILLING_REQUIRED in http/error.json), 0.5.0 (2026-10-19, ADR 0410 A2: le
 // domande dell'agente) 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico) 0.7.0 (2026-10-27, ADR 0409 A1.5:
 // DragMeHere sugli host) e 0.8.0 (2026-10-30, ADR 0409 A2: un server non passa a un altro spazio di
-// lavoro; HOST_OTHER_TENANT e POST /v1/register/check). Ogni test gira
+// lavoro; HOST_OTHER_TENANT e POST /v1/register/check) e 0.9.0 (2026-11-01, ADR 0409 A1.6: fitRows,
+// le righe del client sul telefono). Ogni test gira
 // su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0"}
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -112,6 +113,18 @@ var wantMessages = map[string]map[string][]string{
 			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
 			"session.zoom", "sessions.list", "update.available", "welcome"},
 	},
+	// 0.9.0 (2026-11-01, ADR 0409 A1.6): nessun messaggio nuovo, fitRows in session.open e session.opened.
+	"0.9.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
+			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
+			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
+			"session.interrupt.result", "session.kill.result", "session.opened", "session.refresh.result",
+			"session.rename.result", "session.zoom.result", "sessions.list.result", "update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "file.cancel",
+			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
+			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
+			"session.zoom", "sessions.list", "update.available", "welcome"},
+	},
 }
 
 // Stati dell'agente, ADR 0410 D1.
@@ -176,8 +189,8 @@ func TestOggettiChiusi(t *testing.T) {
 						}
 					}
 					for k, c := range v {
-						if k == "if" {
-							continue // una condizione, non un oggetto del messaggio: non va chiusa
+						if k == "if" || k == "then" {
+							continue // condizione e vincolo condizionato, non oggetti del messaggio: non vanno chiusi
 						}
 						walk(rel, path+"/"+k, c)
 					}
@@ -773,6 +786,73 @@ func TestZeroOttoEstendeZeroSette(t *testing.T) {
 	}
 	if len(cur) != len(old)+2 {
 		t.Errorf("0.8.0 aggiunge %d file, attesi 2", len(cur)-len(old))
+	}
+}
+
+// TestZeroNoveEstendeZeroOtto: la 0.9.0 (ADR 0409 A1.6, rilievo BOSS 2026-10-31) non toglie nulla alla
+// 0.8.0 e aggiunge solo fitRows "client": in session.open, ammesso con fitToPane true e rows ≥ 5; in
+// session.opened, facoltativo. session.resize cambia solo la descrizione. Ogni altro file resta uguale.
+func TestZeroNoveEstendeZeroOtto(t *testing.T) {
+	old, cur := loadAll(t, "0.8.0"), loadAll(t, "0.9.0")
+	body := func(doc map[string]any) map[string]any {
+		p, _ := doc["properties"].(map[string]any)
+		b, _ := p["body"].(map[string]any)
+		return b
+	}
+	props := func(n map[string]any) map[string]any { p, _ := n["properties"].(map[string]any); return p }
+	open, opened, resize := "messages/backend-to-connector/session.open.json",
+		"messages/connector-to-backend/session.opened.json", "messages/backend-to-connector/session.resize.json"
+	if len(cur) != len(old) {
+		t.Errorf("0.9.0 ha %d file, la 0.8.0 %d: nessun file nuovo atteso", len(cur), len(old))
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.9.0", rel)
+			continue
+		}
+		switch rel {
+		case open, opened:
+			ob, cb := props(body(o)), props(body(c))
+			for k, v := range ob {
+				if string(mustJSON(t, map[string]any{"v": v})) != string(mustJSON(t, map[string]any{"v": cb[k]})) {
+					t.Errorf("%s: campo %s cambiato", rel, k)
+				}
+			}
+			if len(cb) != len(ob)+1 {
+				t.Errorf("%s: attesi solo i campi di 0.8.0 più fitRows", rel)
+			}
+			fr, _ := cb["fitRows"].(map[string]any)
+			if e, _ := fr["enum"].([]any); len(e) != 1 || e[0] != "client" {
+				t.Errorf("%s: fitRows deve essere l'enum [\"client\"], trovato %v", rel, cb["fitRows"])
+			}
+			if r, _ := body(c)["required"].([]any); len(r) != len(body(o)["required"].([]any)) {
+				t.Errorf("%s: fitRows non deve diventare obbligatorio", rel)
+			}
+		case resize:
+			if string(mustJSON(t, map[string]any{"b": body(o)})) != string(mustJSON(t, map[string]any{"b": body(c)})) {
+				t.Errorf("%s: il corpo non deve cambiare", rel)
+			}
+		default:
+			if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+				t.Errorf("%s: 0.9.0 cambia un file che doveva restare uguale alla 0.8.0", rel)
+			}
+		}
+	}
+	then, _ := body(cur[open])["then"].(map[string]any)
+	tp := props(then)
+	cond, _ := body(cur[open])["if"].(map[string]any)
+	if r, _ := cond["required"].([]any); len(r) != 1 || r[0] != "fitRows" {
+		t.Errorf("session.open: la condizione deve scattare con fitRows, trovata %v", cond)
+	}
+	if fp, _ := tp["fitToPane"].(map[string]any); fp["const"] != true {
+		t.Error("session.open: fitRows vale solo con fitToPane true")
+	}
+	if rp, _ := tp["rows"].(map[string]any); rp["minimum"] != float64(5) {
+		t.Error("session.open: con fitRows rows ≥ 5")
+	}
+	if r, _ := then["required"].([]any); len(r) != 1 || r[0] != "fitToPane" {
+		t.Error("session.open: con fitRows fitToPane è obbligatorio")
 	}
 }
 
