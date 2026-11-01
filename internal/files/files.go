@@ -115,6 +115,7 @@ func (m *Manager) Detach() {
 	m.out = nil
 	m.mu.Unlock()
 	for _, t := range ts {
+		m.cfg.Logger.Warn("connessione caduta, trasferimento annullato", "transferId", t.id, "file", t.filename, "ricevuti", t.received, "attesi", t.size)
 		m.discard(t)
 	}
 }
@@ -138,6 +139,7 @@ func (m *Manager) Handle(env protocol.Envelope) bool {
 			return true
 		}
 		if t := m.take(c.TransferID); t != nil {
+			m.cfg.Logger.Info("trasferimento annullato dal backend", "transferId", t.id, "file", t.filename, "ricevuti", t.received, "attesi", t.size)
 			m.discard(t)
 		}
 		m.send(protocol.TypeFileCancelResult, env.ID, protocol.TransferBody{TransferID: c.TransferID})
@@ -156,7 +158,13 @@ func (m *Manager) send(typ, re string, body any) {
 	}
 }
 
+// reply rifiuta un messaggio che non appartiene a un trasferimento aperto, e lo scrive nel log.
 func (m *Manager) reply(re, code, msg string) {
+	m.cfg.Logger.Warn("file rifiutato", "re", re, "codice", code, "motivo", msg)
+	m.sendError(re, code, msg)
+}
+
+func (m *Manager) sendError(re, code, msg string) {
 	if len(msg) > 2000 {
 		msg = msg[:2000]
 	}
@@ -354,6 +362,7 @@ func (m *Manager) open(re string, p protocol.FilePut) {
 	m.transfers[t.id] = t
 	t.timer = time.AfterFunc(m.cfg.IdleTimeout, func() { m.expire(t) })
 	m.mu.Unlock()
+	m.cfg.Logger.Info("file in arrivo", "transferId", t.id, "file", t.filename, "sottocartella", t.dirPath, "byte", t.size, "blocchi", t.total)
 	m.chunk(re, t, p)
 }
 
@@ -372,10 +381,11 @@ func (m *Manager) expire(t *transfer) {
 
 // abort annulla un trasferimento in corso e risponde con l'errore.
 func (m *Manager) abort(re string, t *transfer, code, msg string) {
+	m.cfg.Logger.Warn("trasferimento annullato", "transferId", t.id, "file", t.filename, "codice", code, "motivo", msg, "ricevuti", t.received, "attesi", t.size)
 	if m.take(t.id) == t {
 		m.discard(t)
 	}
-	m.reply(re, code, msg)
+	m.sendError(re, code, msg)
 }
 
 // chunk scrive un blocco nella sequenza e, all'ultimo, verifica e rinomina.
@@ -445,6 +455,7 @@ func (m *Manager) chunk(re string, t *transfer, p protocol.FilePut) {
 	if t.dirPath != "" {
 		dest = protocol.DropDir + "/" + t.dirPath + "/" + t.filename
 	}
+	m.cfg.Logger.Info("file ricevuto", "transferId", t.id, "percorso", dest, "byte", t.size, "sha256", t.sha)
 	m.send(protocol.TypeFilePutResult, re, protocol.FilePutResult{TransferID: t.id, ChunkIndex: p.ChunkIndex,
 		Received: t.received, Done: true, Path: dest, Size: t.size, SHA256: t.sha})
 }
