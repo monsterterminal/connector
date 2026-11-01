@@ -6,9 +6,11 @@
 package files
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -413,5 +415,62 @@ func TestCadutaDellaConnessioneAnnullaITrasferimenti(t *testing.T) {
 	r.m.Detach()
 	if r.m.Alive() != 0 || len(r.parts("")) != 0 {
 		t.Fatalf("dopo Detach: vivi %d, temporanei %v", r.m.Alive(), r.parts(""))
+	}
+}
+
+// Ogni trasferimento lascia traccia nel log del servizio: arrivo, esito, codice dell'errore. Mai il
+// contenuto del file (SECURITY.md: nei log solo metadati).
+func TestOgniTrasferimentoLasciaTracciaNelLog(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRig(t, func(c *Config) { c.Logger = slog.New(slog.NewTextHandler(&buf, nil)) })
+	const segreto = "contenuto-che-non-deve-finire-nel-log"
+
+	u := newUpload("foto", "ok.bin", 150, 100)
+	u.data = []byte(strings.Repeat(segreto, 4))
+	u.chunk = 100
+	r.all(u)
+	log := buf.String()
+	for _, want := range []string{"file in arrivo", "transferId=" + u.id, "file=ok.bin", "sottocartella=foto", "file ricevuto", "percorso=dragmehere/foto/ok.bin"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("manca %q nel log:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, segreto) {
+		t.Error("il contenuto del file è finito nel log")
+	}
+
+	// Il rifiuto al primo blocco, prima che esista un trasferimento.
+	buf.Reset()
+	dup := newUpload("foto", "ok.bin", 50, 100)
+	if code := r.code(r.send(protocol.TypeFilePut, dup.put(0))); code != protocol.CodeFileExists {
+		t.Errorf("file già presente: %q", code)
+	}
+	if !strings.Contains(buf.String(), "file rifiutato") || !strings.Contains(buf.String(), "codice="+protocol.CodeFileExists) {
+		t.Errorf("rifiuto senza traccia:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	v := newUpload("", "fuori.bin", 300, 100)
+	r.send(protocol.TypeFilePut, v.put(0))
+	r.send(protocol.TypeFilePut, v.put(2))
+	log = buf.String()
+	if !strings.Contains(log, "transferId="+v.id) || !strings.Contains(log, "codice="+protocol.CodeProtocolError) {
+		t.Errorf("annullamento senza transferId o codice:\n%s", log)
+	}
+
+	buf.Reset()
+	w := newUpload("", "tolto.bin", 300, 100)
+	r.send(protocol.TypeFilePut, w.put(0))
+	r.send(protocol.TypeFileCancel, protocol.TransferBody{TransferID: w.id})
+	if !strings.Contains(buf.String(), "annullato dal backend") {
+		t.Errorf("file.cancel senza traccia:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	x := newUpload("", "caduta.bin", 300, 100)
+	r.send(protocol.TypeFilePut, x.put(0))
+	r.m.Detach()
+	if !strings.Contains(buf.String(), "connessione caduta") {
+		t.Errorf("caduta senza traccia:\n%s", buf.String())
 	}
 }
