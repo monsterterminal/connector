@@ -364,12 +364,16 @@ cmd_install() {
 	assert "macchina intatta" test "$(snapshot_host)" = "$before_b7"
 
 	step "B7 — secondo install.sh senza --replace, token nuovo: registrazione saltata"
+	local pid_before
+	pid_before=$(hx systemctl show -p MainPID --value monsterterminal-connector)
 	rc=0
 	run_install "$(token_n 2)" "$STATUS/install-2.log" || rc=$?
 	if [ "$rc" -eq 0 ]; then ok "install.sh è uscito con 0"; else fail "install.sh è uscito con $rc"; fi
 	assert "«già registrato per questo spazio di lavoro» stampato" grep -q "già registrato per questo spazio di lavoro" "$STATUS/install-2.log"
 	assert "status-file: ancora 1 registrazione" test "$(status_field registrations)" = 1
 	assert "servizio ancora attivo" hx_sh 'test "$(systemctl is-active monsterterminal-connector)" = active'
+	assert "servizio riavviato: gira il binario appena installato (MainPID cambiato)" \
+		test "$(hx systemctl show -p MainPID --value monsterterminal-connector)" != "$pid_before"
 
 	step "B8 — install.sh --replace con il token 2: host sostituito"
 	local tok2 old_host_token
