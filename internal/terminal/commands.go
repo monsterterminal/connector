@@ -5,6 +5,8 @@ package terminal
 // (§1.6). Sono gli omologhi dei comandi che il backend lancia via SSH (tmux-attach.ts nel monorepo).
 
 import (
+	"github.com/creack/pty"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -159,6 +161,12 @@ func (m *Manager) handleRefresh(env protocol.Envelope) {
 	if tty == "" {
 		m.reply(env.ID, protocol.CodeChannelUnknown, fmt.Sprintf("canale %d senza client tmux agganciato", c.id))
 		return
+	}
+	if c.fitRows {
+		// Canale fitRows (schemi 0.9.0): il ridisegno riprende anche la larghezza attuale della finestra.
+		if ws, err := pty.GetsizeFull(c.pty); err == nil {
+			_ = pty.Setsize(c.pty, &pty.Winsize{Cols: uint16(m.windowWidth(name, c)), Rows: ws.Rows})
+		}
 	}
 	if _, _, err := m.run(0, "refresh-client", "-t", tty); err != nil {
 		m.failed(env.ID, name, err)

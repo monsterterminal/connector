@@ -52,12 +52,16 @@ type Config struct {
 	Logger             *slog.Logger
 	// ReadBuffer è la dimensione della lettura dal pty; zero = 32 KiB.
 	ReadBuffer int
+	// NoIgnoreSize fa come un tmux più vecchio della 3.2 (senza attach -f ignore-size): solo per i test
+	// del ripiego di fitRows.
+	NoIgnoreSize bool
 }
 
 type channel struct {
 	id       uint32
 	session  string
 	view     bool
+	fitRows  bool // righe del client, colonne della finestra (schemi 0.9.0): resize e refresh rileggono la larghezza
 	cmd      *exec.Cmd
 	pty      *os.File
 	closing  bool // chiuso su richiesta del backend o per la caduta: nessun session.closed
@@ -73,6 +77,9 @@ type Manager struct {
 	channels    map[uint32]*channel
 	maxChannels int
 	unknownLog  map[uint32]time.Time
+
+	ignoreOnce sync.Once // tmux -V, chiesto una volta sola
+	ignoreOK   bool
 }
 
 // New crea il gestore.
@@ -157,7 +164,13 @@ func (m *Manager) Handle(env protocol.Envelope) bool {
 			m.reply(env.ID, protocol.CodeChannelUnknown, fmt.Sprintf("canale %d non aperto", r.Channel))
 			return true
 		}
-		_ = pty.Setsize(c.pty, &pty.Winsize{Cols: uint16(r.Cols), Rows: uint16(r.Rows)})
+		cols := r.Cols
+		if c.fitRows {
+			// Righe del client, colonne della finestra (schemi 0.9.0): le colonne della richiesta non
+			// contano, si rilegge la larghezza attuale.
+			cols = m.windowWidth(m.sessionOf(c), c)
+		}
+		_ = pty.Setsize(c.pty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(r.Rows)})
 	case protocol.TypeSessionClose:
 		cl, err := protocol.DecodeSessionClose(env.Body)
 		if err != nil {
@@ -242,6 +255,56 @@ func (m *Manager) tmux(args ...string) *exec.Cmd {
 	return cmd
 }
 
+// ignoreSize dice se tmux sa agganciare un client con -f ignore-size (tmux ≥ 3.2). Si chiede una volta.
+func (m *Manager) ignoreSize() bool {
+	if m.cfg.NoIgnoreSize {
+		return false
+	}
+	m.ignoreOnce.Do(func() {
+		out, err := m.tmux("-V").Output()
+		m.ignoreOK = err == nil && TmuxHasIgnoreSize(string(out))
+	})
+	return m.ignoreOK
+}
+
+// TmuxHasIgnoreSize interpreta l'uscita di «tmux -V»: vero da 3.2 in poi, e per le versioni di
+// sviluppo («master», «next-3.5»), che seguono l'ultima uscita.
+func TmuxHasIgnoreSize(v string) bool {
+	f := strings.Fields(strings.TrimSpace(v))
+	if len(f) != 2 || f[0] != "tmux" {
+		return false
+	}
+	ver := f[1]
+	if ver == "master" {
+		return true
+	}
+	ver = strings.TrimPrefix(ver, "next-")
+	maj, rest, _ := strings.Cut(ver, ".")
+	// La versione minore può portare una lettera («3.2a», «3.3a»): contano solo le cifre iniziali.
+	n := 0
+	for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+		n++
+	}
+	a, err1 := strconv.Atoi(maj)
+	b, err2 := strconv.Atoi(rest[:n])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return a > 3 || (a == 3 && b >= 2)
+}
+
+// windowWidth è la larghezza attuale della finestra della sessione, per i canali fitRows; se non si
+// legge resta quella del pty.
+func (m *Manager) windowWidth(name string, c *channel) int {
+	if fc, _, err := m.fitSize(name); err == nil {
+		return fc
+	}
+	if ws, err := pty.GetsizeFull(c.pty); err == nil {
+		return int(ws.Cols)
+	}
+	return 80
+}
+
 // target è il bersaglio esatto: «=nome» impedisce a tmux di agganciare per prefisso un'altra
 // sessione («lav» non deve aprire «lavoro»).
 func target(name string) string { return "=" + name }
@@ -286,11 +349,18 @@ func (m *Manager) handleOpen(env protocol.Envelope) {
 		}
 	}
 	cols, rows := o.Cols, o.Rows
+	fitRows := false
 	if o.FitToPane {
 		// Specchio largo (schemi 0.6.0): il canale nasce con le dimensioni della finestra tmux, e
 		// session.opened le dichiara. Se non si leggono si resta su quelle del client.
 		if fc, fr, err := m.fitSize(o.Session); err == nil {
 			cols, rows = fc, fr
+			// fitRows "client" (schemi 0.9.0, ADR 0409 A1.6): le righe sono quelle del client e il
+			// client tmux è in ignore-size, così non cambia la finestra per gli altri. Senza
+			// ignore-size (tmux < 3.2) resta lo specchio largo, e session.opened non lo dichiara.
+			if o.FitRows == protocol.FitRowsClient && m.ignoreSize() {
+				rows, fitRows = o.Rows, true
+			}
 		} else {
 			m.cfg.Logger.Warn("fitToPane: dimensioni della finestra non lette, uso quelle del client", "errore", err.Error())
 		}
@@ -299,6 +369,9 @@ func (m *Manager) handleOpen(env protocol.Envelope) {
 	if o.Mode == protocol.ModeView {
 		args = append(args, "-r")
 	}
+	if fitRows {
+		args = append(args, "-f", "ignore-size")
+	}
 	args = append(args, "-t", target(o.Session))
 	cmd := m.tmux(args...)
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
@@ -306,13 +379,17 @@ func (m *Manager) handleOpen(env protocol.Envelope) {
 		m.reply(env.ID, protocol.CodeSessionNotFound, "tmux non avviabile: "+err.Error())
 		return
 	}
-	c := &channel{id: o.Channel, session: o.Session, view: o.Mode == protocol.ModeView, cmd: cmd, pty: f, finished: make(chan struct{})}
+	c := &channel{id: o.Channel, session: o.Session, view: o.Mode == protocol.ModeView, fitRows: fitRows, cmd: cmd, pty: f, finished: make(chan struct{})}
 	m.mu.Lock()
 	out := m.out
 	m.channels[o.Channel] = c
 	delete(m.unknownLog, o.Channel)
 	m.mu.Unlock()
-	m.send(protocol.TypeSessionOpened, env.ID, protocol.SessionOpened{Channel: o.Channel, Cols: cols, Rows: rows})
+	opened := protocol.SessionOpened{Channel: o.Channel, Cols: cols, Rows: rows}
+	if fitRows {
+		opened.FitRows = protocol.FitRowsClient
+	}
+	m.send(protocol.TypeSessionOpened, env.ID, opened)
 	go m.pump(c, out)
 }
 
