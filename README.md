@@ -4,7 +4,7 @@ Il connettore di MonsterTerminal: un piccolo programma installato sull'host del 
 connessione in uscita verso MonsterTerminal, registra l'host e lascia lavorare tmux e gli agenti AI
 anche quando il collegamento cade.
 
-> Stato: **v0.5.1**, schemi del protocollo **0.7.0** (sul ramo principale 0.8.0, verso la v0.6.0), in uso con il gateway di MonsterTerminal (ADR
+> Stato: **v0.6.0**, schemi del protocollo **0.9.0**, in uso con il gateway di MonsterTerminal (ADR
 > 0409). Cosa fa oggi: registrazione e sostituzione dell'host; collegamento in uscita con heartbeat,
 > ricollegamento, revoca e kill-switch; giornale degli eventi con conferme del backend; terminale sulle
 > sessioni tmux con i sette comandi di sessione (ridisegno, interruzione, appunti, chiusura, rinomina,
@@ -136,7 +136,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 
 ## Riferimenti
 
-- Schemi del protocollo: [`schemas/0.7.0/`](schemas/0.7.0/README.md) (fonte unica del contratto; le
+- Schemi del protocollo: [`schemas/0.9.0/`](schemas/0.9.0/README.md) (fonte unica del contratto; le
   versioni precedenti restano nelle loro cartelle).
 - **Documentazione interna.** Il codice e i commenti citano per numero le decisioni architetturali
   (ADR 0409 il connettore, ADR 0410 gli agenti AI e il catalogo) e per sezione (`§1.x`, `§2.x`) la

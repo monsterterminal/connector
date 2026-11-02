@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.6.0 — 2026-11-02
+
+Quinto rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
+schemi 0.9.0 (la v0.5.1 implementava la 0.7.0) e lo dichiara con `X-MonsterTerminal-Schema`. Solo
+aggiunte: con un backend che non manda `fitRows` il terminale resta com'era.
+
+- Le righe del telefono (ADR 0409 A1.6): con `fitRows: "client"` il canale prende le colonne della
+  finestra tmux e le righe del dispositivo, agganciato con `attach -f ignore-size` (tmux ≥ 3.2), senza
+  toccare la finestra del computer. Con un tmux più vecchio resta lo specchio largo e `session.opened`
+  non dichiara `fitRows`.
+- Un server non passa a un altro spazio di lavoro (ADR 0409 A2): `register -check` chiede al backend,
+  senza consumare il token, se l'host registrato qui è dello stesso spazio. `install.sh` lo verifica
+  prima di toccare la macchina e si ferma con un messaggio chiaro su un altro spazio, su un host revocato
+  senza `--replace` o se la verifica non è disponibile.
+- Correzione: rilanciando `install.sh` per aggiornare, il servizio ora si riavvia davvero. Prima il
+  binario nuovo veniva scritto ma girava ancora quello vecchio fino al riavvio della macchina. Le
+  sessioni tmux restano vive.
+- DragMeHere lascia traccia nel log a ogni trasferimento: file in arrivo, ricevuto, rifiutato o annullato,
+  anche quando cade la connessione.
+- Rilasci: `scripts/firma-rilascio.sh X.Y.Z` fa ricompilazione di controllo, firma e pubblicazione con un
+  comando dal PC di chi custodisce la chiave.
+
+## Schemi 0.9.0 — 2026-11-01
+
+- Solo aggiunte rispetto a 0.8.0 (protocollo sempre 1), ADR 0409 A1.6: `fitRows: "client"` in
+  `session.open`, solo con `fitToPane` vero e `rows` ≥ 5; `session.opened` lo dichiara solo se applicato;
+  `session.resize` su quei canali applica le righe e ignora le colonne.
+
+## Schemi 0.8.0 — 2026-10-29
+
+- Solo aggiunte rispetto a 0.7.0 (protocollo sempre 1), ADR 0409 A2: la sostituzione con il token di un
+  host non revocato di un altro spazio è rifiutata con 409 `HOST_OTHER_TENANT` senza consumare il token
+  di installazione; `POST /v1/register/check`, mai consumante, risponde `same-tenant` con `sameMachine`
+  oppure `not-registered`.
+
 ## v0.5.1 — 2026-10-27
 
 Quarto rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
