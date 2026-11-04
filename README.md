@@ -86,7 +86,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   i trasferimenti aperti si annullano. Output in frame
   da al massimo 64 KiB, accorpato per 5 ms e dosato col resto dei messaggi; oltre 4 MiB in coda i
   canali smettono di leggere da tmux finché la coda non scende sotto 1 MiB. Allo spegnimento il
-  backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host. Non ci sono
+  backend riceve `session.closed` con `connector-shutdown`. Richiede `tmux` sull'host: se manca lo installa `install.sh` col gestore della distribuzione, e se non ci riesce si ferma prima di installare il resto. Non ci sono
   ancora lo specchio largo né la trascrizione continua delle sessioni.
 - **Stati degli agenti** (§1.21, ADR 0410): gli hook di Claude Code eseguono `monsterterminal-connector
   hook <evento>`, che ricava la sessione tmux da `TMUX_PANE` e la passa al connettore su un socket locale

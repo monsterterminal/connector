@@ -33,6 +33,7 @@ MT_UNIT_NAME=monsterterminal-connector
 MT_UNIT=/etc/systemd/system/$MT_UNIT_NAME.service
 MT_DEFAULT_USER=monsterterminal
 MT_DEFAULT_SERVER=https://connect.monsterterminal.com
+MT_OS_RELEASE=/etc/os-release
 
 # Stato della corsa (riempito da parse_args).
 MT_USER=$MT_DEFAULT_USER
@@ -120,13 +121,24 @@ map_arch() {
 	esac
 }
 
-# Suggerimento per installare tmux, dalla famiglia di /etc/os-release (ID e ID_LIKE).
-tmux_hint() {
+# Il comando per installare tmux, dalla famiglia di /etc/os-release (ID e ID_LIKE). Vuoto se la famiglia
+# non è fra quelle note.
+tmux_install_cmd() {
 	case " $1 " in
 	*debian* | *ubuntu*) echo "apt-get install -y tmux" ;;
+	*suse*) echo "zypper --non-interactive install tmux" ;;
 	*rhel* | *fedora* | *centos* | *rocky* | *alma*) echo "dnf install -y tmux" ;;
-	*) echo "installa tmux col gestore dei pacchetti della distribuzione" ;;
+	*arch*) echo "pacman -S --noconfirm --needed tmux" ;;
+	*alpine*) echo "apk add tmux" ;;
 	esac
+}
+
+# Vero se questa uscita di «tmux -V» sa agganciare un client con -f ignore-size: da 3.2 in poi, e per le
+# versioni di sviluppo senza numero. Stessa regola di TmuxHasIgnoreSize in internal/terminal.
+tmux_has_ignore_size() {
+	v=$(printf '%s\n' "$1" | sed -n 's/^tmux [^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\).*$/\1 \2/p')
+	[ -n "$v" ] || return 0
+	[ "${v% *}" -gt 3 ] || { [ "${v% *}" = 3 ] && [ "${v#* }" -ge 2 ]; }
 }
 
 parse_args() {
@@ -307,11 +319,49 @@ check_tools() {
 	else
 		msg "ATTENZIONE: --insecure-skip-signature, la firma del rilascio NON viene verificata."
 	fi
-	if ! command -v tmux >/dev/null 2>&1; then
-		# shellcheck disable=SC1091
-		like=$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
-		msg "tmux non trovato: il terminale lo richiede. Installalo con: $(tmux_hint "$like")"
+}
+
+# Il gestore dei pacchetti, senza domande. Lo stdin chiuso conta: con curl | sh lo stdin è lo script, e
+# un gestore che lo legge se lo mangerebbe. Su apt un primo fallimento è spesso solo l'elenco dei
+# pacchetti vuoto o vecchio di un server appena creato, quindi lo aggiorna e riprova una volta.
+run_tmux_install() {
+	case "$1" in
+	apt-get*)
+		DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 install -y tmux </dev/null >&2 && return 0
+		DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 update </dev/null >&2 || return 1
+		DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 install -y tmux </dev/null >&2
+		;;
+	*)
+		# shellcheck disable=SC2086
+		$1 </dev/null >&2
+		;;
+	esac
+}
+
+# Senza tmux il terminale risponde TMUX_UNAVAILABLE con il server già collegato: meglio installarlo qui
+# o fermarsi qui. Sta dopo la verifica del rilascio e dello spazio di lavoro, prima di ogni altra modifica alla macchina, e il
+# token non è ancora consumato: chi si ferma rilancia lo stesso comando. Un tmux già presente non si
+# tocca mai, nemmeno se vecchio: può avere sessioni aperte, e il terminale funziona lo stesso.
+ensure_tmux() {
+	if command -v tmux >/dev/null 2>&1; then
+		tmux_has_ignore_size "$(tmux -V 2>/dev/null)" \
+			|| msg "$(tmux -V 2>/dev/null) è più vecchio della 3.2: il terminale funziona, ma sul telefono resta la vista larga del computer."
+		return 0
 	fi
+	# shellcheck disable=SC1090
+	like=$(. "$MT_OS_RELEASE" 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
+	cmd=$(tmux_install_cmd "$like")
+	[ -n "$cmd" ] || die "tmux non trovato e questa distribuzione non è fra quelle che so gestire: installalo col suo gestore dei pacchetti e rilancia questo comando. Nessuna modifica fatta."
+	msg "tmux non trovato: il terminale lo richiede, lo installo ($cmd)"
+	if [ "$MT_DRY_RUN" = yes ]; then
+		msg "  [dry-run] $cmd"
+		return 0
+	fi
+	run_tmux_install "$cmd" \
+		|| die "tmux non si è installato. Prova a mano con: $cmd — poi rilancia questo comando. Connettore non installato, token non consumato."
+	command -v tmux >/dev/null 2>&1 \
+		|| die "il gestore dei pacchetti ha finito, ma tmux non si trova. Prova a mano con: $cmd — poi rilancia questo comando. Connettore non installato, token non consumato."
+	msg "Installato: $(tmux -V 2>/dev/null)"
 }
 
 read_token() {
@@ -532,6 +582,7 @@ main() {
 	# sulla macchina, nemmeno un utente (rilievo del banco 2, 20/10).
 	download_release
 	check_existing
+	ensure_tmux
 	ensure_user
 	install_files
 	register_host
