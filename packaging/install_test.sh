@@ -86,11 +86,11 @@ corsa_tmux 0
 check "il gestore dice ok ma tmux non c'\''è: si ferma" '[ "$esito" = 1 ] && printf "%s" "$uscita" | grep -q "tmux non si trova"'
 GESTORE=zypper DISTRO=opensuse-leap DISTRO_LIKE="suse opensuse" corsa_tmux 0 si
 check "suse: passa da zypper" '[ "$esito" = 0 ] && grep -q "non-interactive install tmux" "$banco/log"'
-GESTORE=pacman DISTRO=arch DISTRO_LIKE= corsa_tmux 0 si
+GESTORE=pacman DISTRO=arch DISTRO_LIKE='' corsa_tmux 0 si
 check "arch: passa da pacman" '[ "$esito" = 0 ] && grep -q -- "-S --noconfirm --needed tmux" "$banco/log"'
-GESTORE=apk DISTRO=alpine DISTRO_LIKE= corsa_tmux 0 si
+GESTORE=apk DISTRO=alpine DISTRO_LIKE='' corsa_tmux 0 si
 check "alpine: passa da apk" '[ "$esito" = 0 ] && grep -q "add tmux" "$banco/log"'
-GESTORE=emerge DISTRO=gentoo DISTRO_LIKE= corsa_tmux 0 si
+GESTORE=emerge DISTRO=gentoo DISTRO_LIKE='' corsa_tmux 0 si
 check "distribuzione sconosciuta: si ferma senza lanciare nulla" '[ "$esito" = 1 ] && [ ! -e "$banco/log" ] && printf "%s" "$uscita" | grep -q "Nessuna modifica fatta"'
 SECCO=yes corsa_tmux 0 si
 check "dry-run: dice il comando e non lo lancia" '[ "$esito" = 0 ] && [ ! -e "$banco/log" ] && printf "%s" "$uscita" | grep -q "\[dry-run\] apt-get install -y tmux"'
