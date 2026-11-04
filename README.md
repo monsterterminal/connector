@@ -132,7 +132,7 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   stessa cartella esce con codice `1` e un messaggio. Le sessioni senza adattatore da 30 minuti passano sotto il timer di
   inattività (soglia della configurazione dell'host, 5 minuti di default), letto dall'attività di tmux.
 - **Rifiuti transitori**: `429 RATE_LIMITED` e `503 UNAVAILABLE` all'upgrade non si ritentano prima del
-  `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale.
+  `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale: un tentativo ogni 3-5 s per i primi 2 minuti, poi da 8 a 60 s.
 
 ## Riferimenti
 
