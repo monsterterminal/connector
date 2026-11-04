@@ -84,7 +84,8 @@ func TestDragMeHereDalCapoAllAltro(t *testing.T) {
 	}
 	s.Drop(id)
 	eventually(t, "trasferimento annullato alla caduta", func() bool { return recv.Alive() == 0 })
-	if _, err := os.Stat(filepath.Join(home, "dragmehere", ".mt-"+tid+".part")); !os.IsNotExist(err) {
-		t.Fatal("il temporaneo è rimasto dopo la caduta")
-	}
+	eventually(t, "temporaneo rimosso dopo la caduta", func() bool {
+		_, err := os.Stat(filepath.Join(home, "dragmehere", ".mt-"+tid+".part"))
+		return os.IsNotExist(err)
+	})
 }

@@ -694,9 +694,6 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "hello non valido")
 		return
 	}
-	s.hellos <- hello
-	s.notify("hello")
-
 	welcome := protocol.Welcome{
 		HostID: h.id, Protocol: protocol.Version, ServerTime: protocol.Timestamp(time.Now()),
 		Config: protocol.HostConfig{DefaultIdleThresholdSeconds: 300, SessionIdleThresholds: map[string]int{}, MaxChannels: s.maxChannels()},
@@ -708,6 +705,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err := send(protocol.TypeWelcome, env.ID, welcome); err != nil {
 		return
 	}
+	// Dopo welcome, come il backend: chi aspetta hello può mandare subito un comando, e il connettore
+	// ignora tutto ciò che arriva prima di welcome.
+	s.hellos <- hello
+	s.notify("hello")
 	// Fa fede il backend (§1.12), come onHello del gateway: ACK_AHEAD se il connettore è avanti,
 	// events.ack col segnalibro se differisce e non è zero.
 	s.mu.Lock()
