@@ -135,12 +135,12 @@ func TestCadutaERicollegamento(t *testing.T) {
 		t.Fatalf("collegamenti %d, attesi 2", s.Connects())
 	}
 	sl := r.sl.all()
-	if len(sl) != 1 || sl[0] < 800*time.Millisecond || sl[0] > 1200*time.Millisecond {
-		t.Fatalf("attese %v: attesa una sola di circa 1 s (la prima, dopo un collegamento riuscito)", sl)
+	if len(sl) != 1 || sl[0] < 3*time.Second || sl[0] > 5*time.Second {
+		t.Fatalf("attese %v: attesa una sola di 3-5 s (la prima, dopo un collegamento riuscito)", sl)
 	}
 }
 
-func TestAttesaCrescenteFinchéIlBackendRifiuta(t *testing.T) {
+func TestAttesaRapidaFinchéIlBackendRifiuta(t *testing.T) {
 	s := fakeserver.New()
 	_, tok := s.AddHost()
 	r := start(t, s, tok, nil)
@@ -156,9 +156,9 @@ func TestAttesaCrescenteFinchéIlBackendRifiuta(t *testing.T) {
 		}
 	}
 	sl := r.sl.all()
-	for i := 1; i < 4; i++ {
-		if sl[i] <= sl[i-1] {
-			t.Fatalf("attese non crescenti: %v", sl[:4])
+	for i := 0; i < 4; i++ {
+		if sl[i] < 3*time.Second || sl[i] > 5*time.Second {
+			t.Fatalf("attese fuori da 3-5 s nella fase rapida: %v", sl[:4])
 		}
 	}
 }
