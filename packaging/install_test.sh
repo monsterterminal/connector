@@ -29,8 +29,80 @@ check "token con caratteri estranei" '! valid_install_token "mti_abcdefghijklmno
 check "x86_64 → amd64" '[ "$(map_arch x86_64)" = amd64 ]'
 check "aarch64 → arm64" '[ "$(map_arch aarch64)" = arm64 ]'
 check "armv7l rifiutata" '! map_arch armv7l'
-check "hint tmux debian" '[ "$(tmux_hint "ubuntu debian")" = "apt-get install -y tmux" ]'
-check "hint tmux rhel" '[ "$(tmux_hint "rocky rhel centos fedora")" = "dnf install -y tmux" ]'
+
+# --- tmux: si installa da solo, o ci si ferma prima di toccare il resto ---
+check "tmux: debian" '[ "$(tmux_install_cmd "ubuntu debian")" = "apt-get install -y tmux" ]'
+check "tmux: rhel" '[ "$(tmux_install_cmd "rocky rhel centos fedora")" = "dnf install -y tmux" ]'
+check "tmux: amazon linux" '[ "$(tmux_install_cmd "amzn centos rhel fedora")" = "dnf install -y tmux" ]'
+check "tmux: suse" '[ "$(tmux_install_cmd "opensuse-leap suse opensuse")" = "zypper --non-interactive install tmux" ]'
+check "tmux: arch" '[ "$(tmux_install_cmd "manjaro arch")" = "pacman -S --noconfirm --needed tmux" ]'
+check "tmux: alpine" '[ "$(tmux_install_cmd "alpine ")" = "apk add tmux" ]'
+check "tmux: famiglia sconosciuta, nessun comando" '[ -z "$(tmux_install_cmd "gentoo ")" ]'
+check "tmux 3.2 ha ignore-size" 'tmux_has_ignore_size "tmux 3.2"'
+check "tmux 3.2a ha ignore-size" 'tmux_has_ignore_size "tmux 3.2a"'
+check "tmux 3.10 ha ignore-size" 'tmux_has_ignore_size "tmux 3.10"'
+check "tmux 4.0 ha ignore-size" 'tmux_has_ignore_size "tmux 4.0"'
+check "tmux next-3.5 ha ignore-size" 'tmux_has_ignore_size "tmux next-3.5"'
+check "tmux master, senza numero, ha ignore-size" 'tmux_has_ignore_size "tmux master"'
+check "tmux 3.1c non ha ignore-size" '! tmux_has_ignore_size "tmux 3.1c"'
+check "tmux 2.7 non ha ignore-size" '! tmux_has_ignore_size "tmux 2.7"'
+
+# corsa_tmux ESITO_GESTORE [TMUX_DOPO] : ensure_tmux con un gestore finto, una os-release finta e una
+# PATH senza il tmux vero. Il gestore scrive cosa ha ricevuto; se TMUX_DOPO=si crea un tmux finto.
+banco=$(mktemp -d)
+corsa_tmux() {
+	rm -rf "${banco:?}/bin" "${banco:?}/log"
+	mkdir -p "$banco/bin"
+	ln -s "$(command -v sed)" "$banco/bin/sed"
+	cat >"$banco/bin/${GESTORE:-apt-get}" <<FINTO
+#!/bin/sh
+printf '%s stdin=%s deb=%s\n' "\$*" "\$(/bin/cat | /usr/bin/wc -c)" "\${DEBIAN_FRONTEND:-}" >>"$banco/log"
+case "\$*" in *update*) exit 0 ;; esac
+if [ -n "${SOLO_DOPO_UPDATE:-}" ] && ! /bin/grep -q update "$banco/log"; then exit 100; fi
+[ "$1" = 0 ] || exit "$1"
+if [ "${2:-}" = si ]; then printf '#!/bin/sh\necho "tmux 3.4"\n' >"$banco/bin/tmux"; /bin/chmod +x "$banco/bin/tmux"; fi
+FINTO
+	chmod +x "$banco/bin/${GESTORE:-apt-get}"
+	printf 'ID=%s\nID_LIKE="%s"\n' "${DISTRO:-ubuntu}" "${DISTRO_LIKE-debian}" >"$banco/os-release"
+	esito=0
+	uscita=$(sh -c '
+		MT_INSTALL_SOURCED=1; . "$1"
+		PATH=$2/bin; MT_OS_RELEASE=$2/os-release; MT_DRY_RUN=${3:-no}
+		ensure_tmux
+		echo arrivato-in-fondo
+	' sh "$here/install.sh" "$banco" "${SECCO:-no}" 2>&1 </dev/null) || esito=$?
+}
+corsa_tmux 0 si
+check "manca tmux: lo installa e prosegue" '[ "$esito" = 0 ] && printf "%s" "$uscita" | grep -q arrivato-in-fondo && printf "%s" "$uscita" | grep -q "Installato: tmux 3.4"'
+check "il gestore gira senza domande" 'grep -q "install -y tmux" "$banco/log" && grep -q "deb=noninteractive" "$banco/log"'
+check "il gestore non legge lo script dallo stdin" 'grep -q "stdin=0 " "$banco/log"'
+check "basta un tentativo se riesce: niente update" '! grep -q update "$banco/log"'
+SOLO_DOPO_UPDATE=1 corsa_tmux 0 si
+check "elenco dei pacchetti vuoto: aggiorna e riprova" '[ "$esito" = 0 ] && [ "$(grep -c "install -y tmux" "$banco/log")" = 2 ] && grep -q update "$banco/log"'
+SOLO_DOPO_UPDATE=
+corsa_tmux 100
+check "il gestore fallisce: si ferma e dice il comando" '[ "$esito" = 1 ] && ! printf "%s" "$uscita" | grep -q arrivato-in-fondo && printf "%s" "$uscita" | grep -q "apt-get install -y tmux" && printf "%s" "$uscita" | grep -q "token non consumato"'
+corsa_tmux 0
+check "il gestore dice ok ma tmux non c'\''è: si ferma" '[ "$esito" = 1 ] && printf "%s" "$uscita" | grep -q "tmux non si trova"'
+GESTORE=zypper DISTRO=opensuse-leap DISTRO_LIKE="suse opensuse" corsa_tmux 0 si
+check "suse: passa da zypper" '[ "$esito" = 0 ] && grep -q "non-interactive install tmux" "$banco/log"'
+GESTORE=pacman DISTRO=arch DISTRO_LIKE= corsa_tmux 0 si
+check "arch: passa da pacman" '[ "$esito" = 0 ] && grep -q -- "-S --noconfirm --needed tmux" "$banco/log"'
+GESTORE=apk DISTRO=alpine DISTRO_LIKE= corsa_tmux 0 si
+check "alpine: passa da apk" '[ "$esito" = 0 ] && grep -q "add tmux" "$banco/log"'
+GESTORE=emerge DISTRO=gentoo DISTRO_LIKE= corsa_tmux 0 si
+check "distribuzione sconosciuta: si ferma senza lanciare nulla" '[ "$esito" = 1 ] && [ ! -e "$banco/log" ] && printf "%s" "$uscita" | grep -q "Nessuna modifica fatta"'
+SECCO=yes corsa_tmux 0 si
+check "dry-run: dice il comando e non lo lancia" '[ "$esito" = 0 ] && [ ! -e "$banco/log" ] && printf "%s" "$uscita" | grep -q "\[dry-run\] apt-get install -y tmux"'
+SECCO=no
+corsa_tmux 0
+rm -f "$banco/log"
+printf '#!/bin/sh\necho "tmux 3.1c"\n' >"$banco/bin/tmux"; chmod +x "$banco/bin/tmux"
+uscita=$(sh -c 'MT_INSTALL_SOURCED=1; . "$1"; PATH=$2/bin; MT_OS_RELEASE=$2/os-release; ensure_tmux; echo arrivato-in-fondo' sh "$here/install.sh" "$banco" 2>&1 </dev/null)
+check "tmux vecchio: non lo tocca, avvisa e prosegue" '[ ! -e "$banco/log" ] && printf "%s" "$uscita" | grep -q "più vecchio della 3.2" && printf "%s" "$uscita" | grep -q arrivato-in-fondo'
+printf '#!/bin/sh\necho "tmux 3.4"\n' >"$banco/bin/tmux"
+uscita=$(sh -c 'MT_INSTALL_SOURCED=1; . "$1"; PATH=$2/bin; MT_OS_RELEASE=$2/os-release; ensure_tmux; echo arrivato-in-fondo' sh "$here/install.sh" "$banco" 2>&1 </dev/null)
+check "tmux recente: nessun avviso" '! printf "%s" "$uscita" | grep -q "più vecchio" && printf "%s" "$uscita" | grep -q arrivato-in-fondo'
 
 # --- opzioni (§1.14, D5-D7) ---
 MT_VERSION=0.2.0
@@ -104,7 +176,7 @@ check "conf: auto_update e catalog_install (§1.11)" 'printf "%s" "$conf" | grep
 
 # --- firma Ed25519 con OpenSSL (§1.10, §1.17): una coppia generata qui, mai una chiave vera ---
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp" "$banco"' EXIT
 openssl genpkey -algorithm ed25519 -out "$tmp/k.pem" 2>/dev/null
 openssl pkey -in "$tmp/k.pem" -pubout -out "$tmp/k.pub" 2>/dev/null
 printf 'ciao\n' >"$tmp/bin"
@@ -166,6 +238,7 @@ MT_UPDATES_PUBKEY_PEM=""
 check "senza chiave pubblica lo script si ferma" '! (check_tools) 2>/dev/null'
 
 # --- ordine dei passi: il rilascio si scarica e si verifica PRIMA di creare l'utente (banco 2) ---
+check "main: la verifica del rilascio precede tmux, tmux precede l'\''utente" '[ "$(grep -n "^	download_release$" "$here/install.sh" | cut -d: -f1)" -lt "$(grep -n "^	ensure_tmux$" "$here/install.sh" | cut -d: -f1)" ] && [ "$(grep -n "^	ensure_tmux$" "$here/install.sh" | cut -d: -f1)" -lt "$(grep -n "^	ensure_user$" "$here/install.sh" | cut -d: -f1)" ]'
 check "main: download_release precede ensure_user" '[ "$(grep -n "^	download_release$" "$here/install.sh" | cut -d: -f1)" -lt "$(grep -n "^	ensure_user$" "$here/install.sh" | cut -d: -f1)" ]'
 
 # --- --dry-run: nessun effetto, e il token non compare mai nell'uscita ---
