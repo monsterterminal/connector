@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.1 — 2026-11-04
+
+Sesto rilascio firmato (chiave `mt-updates-2026`). Protocollo e schemi invariati.
+
+- `install.sh` installa tmux se manca, senza domande, col gestore della distribuzione (apt-get, dnf,
+  zypper, pacman, apk). Se non ci riesce si ferma prima di creare l'utente e di registrare l'host, dice
+  il comando da provare e il token resta valido. Prima finiva l'installazione e il terminale rispondeva
+  `TMUX_UNAVAILABLE`.
+- Un tmux già presente non si tocca, anche sotto la 3.2: `install.sh` avvisa e prosegue. Il terminale
+  funziona, sul telefono resta la vista larga del computer.
+- Dopo una caduta il connettore ritenta ogni 3-5 s per i primi 2 minuti, poi da 8 a 60 s (prima da 1 a
+  60 s raddoppiando). Dopo un riavvio del backend rientra pochi secondi dopo il suo ritorno. `Retry-After`
+  e l'attesa minima dopo `HOST_DISABLED` restano come prima.
+- Il banco di prova non ha più le due corse che rendevano rossa la CI a intermittenza.
+
 ## v0.6.0 — 2026-11-02
 
 Quinto rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
