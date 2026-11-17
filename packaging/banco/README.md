@@ -23,7 +23,7 @@ bash packaging/banco/banco.sh install    # il comando di una riga + asserzioni (
 bash packaging/banco/banco.sh spazi      # un altro spazio di lavoro non prende il server (ADR 0409 A2)
 bash packaging/banco/banco.sh update     # aggiornamento automatico a v0.0.1-banco (ADR 0438 D3)
 bash packaging/banco/banco.sh rollback   # v0.0.2-banco con hello rotto: ritorno a v0.0.1-banco
-bash packaging/banco/banco.sh update-negative  # dieci modi di NON farsi installare qualcosa
+bash packaging/banco/banco.sh update-negative  # undici modi di NON farsi installare qualcosa
 bash packaging/banco/banco.sh uninstall  # --uninstall --purge + asserzioni
 bash packaging/banco/banco.sh status     # lo status-file del backend finto (JSON)
 bash packaging/banco/banco.sh down       # rimuove tutto ciò che il banco ha creato (mt-banco-*)
@@ -93,6 +93,7 @@ connessione mantenuta.
 | `rollback` (D3 punto 4) | spinge v0.0.2-banco (hello rotto) | binario sostituito, `.prev` = v0.0.1, timer armato, journal «hello volutamente rotto»; dopo 45 s il binario torna v0.0.1 (rename di `.prev`), `update.result rolled-back` con `no-welcome`, `connector.restarted` `rollback`, servizio attivo, cassetta pulita, sessione tmux ancora viva |
 | `update-negative` N1-N5 (D3 punto 1) | firma di un'altra chiave; firma con la chiave delle ricette; downgrade e stessa versione; URL fuori dal repository; sha256 diverso | `update.result failed` con `bad-signature`, `bad-signature`, `not-newer` (×2), `bad-url` senza nessun download; `sha256-mismatch` con un download e nessun `apply.request` |
 | N6-N8 (D6) | `auto-update false` dal backend poi un manifest; `auto_update=no` nel file dell'host con un pacchetto **in regola** (v0.0.3 firmato) messo a mano in `update/` con `apply.request` e poi un manifest di sicurezza spinto; infine un manifest `security:true` (v0.0.3-banco) con l'interruttore del backend ancora spento | `skipped tenant-switch`; l'**updater** rifiuta con `apply.rejected host-config` (riportato `skipped host-config`), il manifest spinto è `skipped host-config` senza download; v0.0.3 **installata** (`ok`) nonostante l'interruttore del backend |
+| N11 (D3 punto 1) | manifest firmato valido per l'**altra** architettura (`arm64` su un host `amd64`), versione maggiore, sha di un asset qualsiasi | `update.result failed wrong-platform`, nessun download (contatore nginx invariato), nessun `apply.request`, host intatto (snapshot) |
 | N9, N9b, N10 (D3 punto 2, decisione BOSS 2026-11-17) | l'utente `monsterterminal` mette in `update/` un binario (`/bin/true`) con manifest e firma di zeri, poi con firma della chiave delle ricette, poi un **symlink** al binario di root con un manifest firmato sullo sha di quel file, sempre con `apply.request` | l'updater scrive `apply.rejected` (`bad-signature`, `bad-signature`, `download-failed`), il connettore lo riporta come `update.result failed`, binario/conf/unit/token intatti, nessun `.prev`, nessuna copia in `updater/`, journal «rifiutato» |
 
 Resta manuale (non nel banco): il tetto di 64 MiB del download e della copia (coperto dai test unit
