@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/monsterterminal/connector/internal/protocol"
@@ -350,6 +351,39 @@ func TestApplySenzaTimerNonInstalla(t *testing.T) {
 	}
 	if o := b.rejected(t); o.Reason != ReasonDownloadFailed {
 		t.Fatalf("apply.rejected: %+v", o)
+	}
+}
+
+// Le unità girano con UMask=0077 (rilievo del banco del 17/11: il .prev nasceva 0700 e dopo il
+// ritorno il servizio non partiva più, applied.json 0600 non era leggibile dal connettore): i modi si
+// impongono con fchmod, qualunque sia la umask.
+func TestApplyConUmaskStretta(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+	b := newBench(t)
+	body := []byte("binario nuovo 0.7.0")
+	b.prepare(t, body, newManifest("0.7.0"), nil)
+	if err := Apply(b.cfg()); err != nil {
+		t.Fatal(err)
+	}
+	for f, want := range map[string]os.FileMode{b.bin: 0o755, b.bin + PrevSuffix: 0o755, filepath.Join(b.updateDir, FileApplied): 0o644} {
+		if st, err := os.Stat(f); err != nil || st.Mode().Perm() != want {
+			t.Errorf("%s: modo %v (%v), atteso %o", f, st.Mode().Perm(), err, want)
+		}
+	}
+	if _, ok, err := ReadApplied(b.updateDir); !ok || err != nil {
+		t.Fatalf("applied.json illeggibile: %v %v", ok, err)
+	}
+	// Nessun welcome: il ritorno rimette il .prev al suo posto, eseguibile.
+	b.calls = nil
+	if a, err := RollbackCheck(b.cfg()); err != nil || a != RollbackRestore {
+		t.Fatalf("ritorno: %s %v", a, err)
+	}
+	if st, _ := os.Stat(b.bin); st.Mode().Perm() != 0o755 {
+		t.Fatalf("binario ripristinato con modo %v", st.Mode().Perm())
+	}
+	if st, _ := os.Stat(filepath.Join(b.updateDir, FileRolledBack)); st.Mode().Perm() != 0o644 {
+		t.Fatalf("rolled-back.json con modo %v", st.Mode().Perm())
 	}
 }
 

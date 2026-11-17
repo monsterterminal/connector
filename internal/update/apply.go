@@ -301,6 +301,9 @@ func RollbackCheck(cfg ApplyConfig) (RollbackAction, error) {
 		if err := os.Rename(prev, cfg.Binary); err != nil {
 			return action, fmt.Errorf("ripristino di %s: %w", cfg.Binary, err)
 		}
+		if err := os.Chmod(cfg.Binary, 0o755); err != nil {
+			log.Error("permessi del binario ripristinato", "errore", err.Error())
+		}
 		if err := WriteToMailbox(updateDir, FileRolledBack, Outcome{Version: p.Version, Reason: ReasonNoWelcome}); err != nil {
 			log.Error("rolled-back.json non scritto", "errore", err.Error())
 		}
@@ -381,6 +384,11 @@ func copyNoFollow(src, dst string, max int64, mode fs.FileMode) (string, error) 
 		out.Close()
 		os.Remove(dst)
 		return "", reject(reason, format, a...)
+	}
+	// Il modo si impone con fchmod: le unità girano con UMask=0077, e un .prev o un binario nati 0700
+	// non sarebbero eseguibili dall'utente del connettore (rilievo del banco, 17/11).
+	if err := out.Chmod(mode); err != nil {
+		return fail(ReasonDownloadFailed, "modo di %s: %v", filepath.Base(dst), err)
 	}
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(f, max+1))

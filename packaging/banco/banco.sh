@@ -745,7 +745,8 @@ cmd_update() {
 	tmux_mt kill-server 2>/dev/null || true
 	send_cmd '{"action":"session.open","session":"prima-del-rilascio"}'
 	assert "sessione tmux «prima-del-rilascio» aperta dal connettore entro 15 s" wait_tmux prima-del-rilascio 15
-	assert "il server tmux sta nel cgroup del servizio (figlio del connettore, non del banco)" hx_sh 'pid=$(pgrep -u monsterterminal -x tmux | head -n 1); test -n "$pid" && grep -q monsterterminal-connector.service "/proc/$pid/cgroup"'
+	assert "il server tmux sta nello stesso cgroup del servizio (figlio del connettore, non del banco)" hx_sh 'pid=$(pgrep -u monsterterminal -x tmux | head -n 1); main=$(systemctl show -p MainPID --value monsterterminal-connector); test -n "$pid" && test "$(cat "/proc/$pid/cgroup")" = "$(cat "/proc/$main/cgroup")"'
+	msg "   cgroup del server tmux: $(hx_sh 'pid=$(pgrep -u monsterterminal -x tmux | head -n 1); cat "/proc/$pid/cgroup" 2>/dev/null' | tr '\n' ' ')"
 
 	step "U2 — il backend finto spinge update.available v$UPD1 (firmato con la chiave del banco)"
 	local pid_before

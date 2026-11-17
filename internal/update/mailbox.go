@@ -103,6 +103,11 @@ func WriteToMailbox(updateDir, name string, v any) error {
 	if err != nil {
 		return err
 	}
+	// fchmod: l'unità dell'updater gira con UMask=0077 e il connettore deve poter leggere l'esito.
+	if err := f.Chmod(0o644); err != nil {
+		f.Close()
+		return err
+	}
 	if _, err := f.Write(append(raw, '\n')); err != nil {
 		f.Close()
 		return err
