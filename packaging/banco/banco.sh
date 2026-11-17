@@ -537,8 +537,10 @@ cmd_spazi() {
 snapshot_host() {
 	hx_sh 'for f in /usr/local/bin/monsterterminal-connector /etc/monsterterminal/connector.conf /etc/systemd/system/monsterterminal-connector.service /var/lib/monsterterminal/host-token; do if [ -e "$f" ]; then sha256sum "$f"; else echo "assente $f"; fi; done'
 }
-downloads_count() { docker logs "$REL_C" 2>&1 | grep -c 'GET /releases/download/' || true; }
-binary_downloads() { docker logs "$REL_C" 2>&1 | grep -c "GET /releases/download/.*/monsterterminal-connector_" || true; }
+# Le richieste a nginx, sia come releases.banco (/releases/download/) sia come github.com
+# (/monsterterminal/connector/releases/download/).
+downloads_count() { docker logs "$REL_C" 2>&1 | grep -cE 'GET (/monsterterminal/connector)?/releases/download/' || true; }
+binary_downloads() { docker logs "$REL_C" 2>&1 | grep -cE "GET (/monsterterminal/connector)?/releases/download/.*/monsterterminal-connector_" || true; }
 
 cmd_negative() {
 	require_up
