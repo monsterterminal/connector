@@ -282,16 +282,21 @@ render_updater_path() {
 		"WantedBy=multi-user.target"
 }
 
+# $1 è l'utente del servizio (User= dell'unità del connettore, root compreso): l'updater pretende che
+# la cartella di stato e la cassetta siano sue. StartLimit: se apply.request non si può togliere in
+# sicurezza, l'unità path non deve rilanciare l'updater in ciclo.
 render_updater_service() {
 	printf '%s\n' \
 		"[Unit]" \
 		"Description=MonsterTerminal connector: applica un aggiornamento firmato (updater root)" \
 		"Documentation=https://github.com/monsterterminal/connector" \
+		"StartLimitIntervalSec=10min" \
+		"StartLimitBurst=3" \
 		"" \
 		"[Service]" \
 		"Type=oneshot" \
 		"TimeoutStartSec=10min" \
-		"ExecStart=$MT_BIN apply-update -state-dir $MT_STATE -config $MT_CONF" \
+		"ExecStart=$MT_BIN apply-update -state-dir $MT_STATE -config $MT_CONF -service-user $1" \
 		"UMask=0077"
 }
 
@@ -319,7 +324,7 @@ render_rollback_service() {
 		"[Service]" \
 		"Type=oneshot" \
 		"TimeoutStartSec=2min" \
-		"ExecStart=$MT_BIN.prev rollback-check -state-dir $MT_STATE -config $MT_CONF" \
+		"ExecStart=$MT_BIN.prev rollback-check -state-dir $MT_STATE -config $MT_CONF -service-user $1" \
 		"UMask=0077"
 }
 
@@ -607,18 +612,18 @@ install_service() {
 		{
 			render_unit "$MT_USER" "$MT_HOME" "$MT_SERVER"
 			render_updater_path
-			render_updater_service
+			render_updater_service "$MT_USER"
 			render_rollback_timer "$MT_ROLLBACK_AFTER"
-			render_rollback_service
+			render_rollback_service "$MT_USER"
 		} | sed 's/^/  [dry-run] /' >&2
 		return 0
 	fi
 	render_unit "$MT_USER" "$MT_HOME" "$MT_SERVER" | write_unit "$MT_UNIT_NAME.service"
 	# Un'installazione su un host dove le unità esistono già (aggiornamento manuale) le riscrive.
 	render_updater_path | write_unit "$MT_UPDATER_PATH"
-	render_updater_service | write_unit "$MT_UPDATER_SERVICE"
+	render_updater_service "$MT_USER" | write_unit "$MT_UPDATER_SERVICE"
 	render_rollback_timer "$MT_ROLLBACK_AFTER" | write_unit "$MT_ROLLBACK_TIMER"
-	render_rollback_service | write_unit "$MT_ROLLBACK_SERVICE"
+	render_rollback_service "$MT_USER" | write_unit "$MT_ROLLBACK_SERVICE"
 	systemctl daemon-reload
 	# Un ritorno armato da un aggiornamento precedente non deve scattare su questa installazione, e un
 	# aggiornamento rimasto a metà non deve confondere il connettore nuovo.

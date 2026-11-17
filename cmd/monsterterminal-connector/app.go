@@ -111,6 +111,7 @@ func (a app) run(ctx context.Context, args []string) int {
 	replace := fs.Bool("replace", false, "register: sostituisce l'host registrato su questa macchina (serve il suo token attuale)")
 	check := fs.Bool("check", false, "register: verifica, senza consumare il token, se l'host registrato qui è dello spazio del token di installazione")
 	yes := fs.Bool("yes", false, "hooks install: risponde sì alla domanda di consenso senza terminale")
+	serviceUser := fs.String("service-user", "", "apply-update, rollback-check: l'utente del servizio del connettore (User= dell'unità); la cartella di stato deve essere sua")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitUsage
 	}
@@ -162,9 +163,9 @@ func (a app) run(ctx context.Context, args []string) int {
 	case "hooks":
 		err = a.cmdHooks(fs.Arg(0), *stateDir, *yes)
 	case "apply-update":
-		err = a.cmdApplyUpdate(log, *stateDir, *configFile)
+		err = a.cmdApplyUpdate(log, *stateDir, *configFile, *serviceUser)
 	case "rollback-check":
-		err = a.cmdRollbackCheck(log, *stateDir, *configFile)
+		err = a.cmdRollbackCheck(log, *stateDir, *configFile, *serviceUser)
 	default:
 		a.usage()
 		return exitUsage

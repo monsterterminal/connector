@@ -175,9 +175,11 @@ rm -f "$uf"
 up=$(render_updater_path)
 check "path: osserva apply.request nella cartella del connettore" 'printf "%s" "$up" | grep -q "^PathExists=/var/lib/monsterterminal/update/apply.request$"'
 check "path: avvia l’unità updater" 'printf "%s" "$up" | grep -q "^Unit=monsterterminal-connector-updater.service$"'
-us=$(render_updater_service)
-check "updater: oneshot, root (senza User=), apply-update col binario INSTALLATO e il file dell’host" 'printf "%s" "$us" | grep -q "^Type=oneshot$" && ! printf "%s" "$us" | grep -q "^User=" && printf "%s" "$us" | grep -q "^ExecStart=/usr/local/bin/monsterterminal-connector apply-update -state-dir /var/lib/monsterterminal -config /etc/monsterterminal/connector.conf$"'
-check "updater e ritorno: un tempo massimo (una FIFO non li tiene appesi)" 'printf "%s" "$us" | grep -q "^TimeoutStartSec=10min$" && render_rollback_service | grep -q "^TimeoutStartSec=2min$"'
+us=$(render_updater_service mario)
+check "updater: oneshot, root (senza User=), apply-update col binario INSTALLATO e il file dell’host" 'printf "%s" "$us" | grep -q "^Type=oneshot$" && ! printf "%s" "$us" | grep -q "^User=" && printf "%s" "$us" | grep -q "^ExecStart=/usr/local/bin/monsterterminal-connector apply-update -state-dir /var/lib/monsterterminal -config /etc/monsterterminal/connector.conf -service-user mario$"'
+check "updater e ritorno: un tempo massimo (una FIFO non li tiene appesi)" 'printf "%s" "$us" | grep -q "^TimeoutStartSec=10min$" && render_rollback_service mario | grep -q "^TimeoutStartSec=2min$"'
+check "updater: limite di avvio (niente ciclo dell’unità path se apply.request resta)" 'printf "%s" "$us" | grep -q "^StartLimitIntervalSec=10min$" && printf "%s" "$us" | grep -q "^StartLimitBurst=3$"'
+check "servizio come root (--user root): l’updater riceve -service-user root" 'render_updater_service root | grep -q -- "-service-user root$" && render_rollback_service root | grep -q -- "-service-user root$"'
 rt=$(render_rollback_timer "$MT_ROLLBACK_AFTER")
 check "timer: 5 minuti di default (§1.10 punto 6)" 'printf "%s" "$rt" | grep -q "^OnActiveSec=5min$"'
 check "timer: non resta caricato dopo lo scadere (si riarma a ogni aggiornamento)" 'printf "%s" "$rt" | grep -q "^RemainAfterElapse=no$" && printf "%s" "$rt" | grep -q "^Unit=monsterterminal-connector-rollback.service$"'
@@ -188,8 +190,8 @@ check "MT_ROLLBACK_AFTER con MT_BANCO=1: accettato" '(MT_ROLLBACK_AFTER=20s MT_B
 check "la cartella dell’updater sta accanto a quella di stato, non sotto (ADR 0438 A1)" '[ "$MT_UPDATER_DIR" = /var/lib/monsterterminal-updater ]'
 check "install_files crea la cartella dell’updater root 0700" 'grep -q "install -d -m 0700 -o root -g root \"\$MT_UPDATER_DIR\"" "$here/install.sh"'
 check "install_service ripulisce pending.json e applied.json a una reinstallazione" 'grep -q "rm -f \"\$MT_BIN.prev\" \"\$MT_UPDATER_DIR/pending.json\" \"\$MT_STATE/update/applied.json\"" "$here/install.sh"'
-rs=$(render_rollback_service)
-check "ritorno: oneshot, root, rollback-check col binario .prev" 'printf "%s" "$rs" | grep -q "^Type=oneshot$" && ! printf "%s" "$rs" | grep -q "^User=" && printf "%s" "$rs" | grep -q "^ExecStart=/usr/local/bin/monsterterminal-connector.prev rollback-check -state-dir /var/lib/monsterterminal -config /etc/monsterterminal/connector.conf$"'
+rs=$(render_rollback_service mario)
+check "ritorno: oneshot, root, rollback-check col binario .prev" 'printf "%s" "$rs" | grep -q "^Type=oneshot$" && ! printf "%s" "$rs" | grep -q "^User=" && printf "%s" "$rs" | grep -q "^ExecStart=/usr/local/bin/monsterterminal-connector.prev rollback-check -state-dir /var/lib/monsterterminal -config /etc/monsterterminal/connector.conf -service-user mario$"'
 check "nessuna unità dell’aggiornamento porta token o segreti" '! printf "%s%s%s%s" "$up" "$us" "$rt" "$rs" | grep -qi "token"'
 check "uninstall: toglie path, timer, le due unità, .prev, .new e la cartella dell’updater" 'grep -q "MT_UPDATER_PATH.*MT_ROLLBACK_TIMER.*MT_UPDATER_SERVICE.*MT_ROLLBACK_SERVICE" "$here/install.sh" && grep -q "rm -f \"\$MT_BIN\" \"\$MT_BIN.prev\" \"\$MT_BIN.new\"" "$here/install.sh" && grep -q "rm -rf \"\$MT_ETC\" \"\$MT_UPDATER_DIR\"" "$here/install.sh"'
 check "install_files crea la cassetta update/ del connettore (0700, sua)" 'grep -q "install -d -m 0700 -o \"\$MT_USER\" -g \"\$MT_USER\" \"\$MT_STATE/update\"" "$here/install.sh"'

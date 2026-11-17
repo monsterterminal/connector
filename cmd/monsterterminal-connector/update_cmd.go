@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/user"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,10 +45,25 @@ func (a app) updateClient() *http.Client {
 	}
 }
 
-func (a app) applyConfig(log *slog.Logger, stateDir, configFile string) (update.ApplyConfig, error) {
+func (a app) applyConfig(log *slog.Logger, stateDir, configFile, serviceUser string) (update.ApplyConfig, error) {
 	bin, err := a.executable()
 	if err != nil {
 		return update.ApplyConfig{}, fmt.Errorf("percorso del binario: %w", err)
+	}
+	// L'utente del servizio (User= dell'unità del connettore, scritto da install.sh anche
+	// nell'unità dell'updater con -service-user): <state> e update/ devono essere suoi, root compreso
+	// quando il servizio gira come root. Senza opzione vale l'owner di <state>.
+	serviceUID := -1
+	if serviceUser != "" {
+		u, err := user.Lookup(serviceUser)
+		if err != nil {
+			return update.ApplyConfig{}, fmt.Errorf("utente del servizio %q: %w", serviceUser, err)
+		}
+		n, err := strconv.Atoi(u.Uid)
+		if err != nil {
+			return update.ApplyConfig{}, fmt.Errorf("utente del servizio %q: uid %q", serviceUser, u.Uid)
+		}
+		serviceUID = n
 	}
 	// Il binario .prev esegue rollback-check: il binario installato è quello senza suffisso.
 	bin = strings.TrimSuffix(bin, update.PrevSuffix)
@@ -56,13 +73,13 @@ func (a app) applyConfig(log *slog.Logger, stateDir, configFile string) (update.
 	}
 	return update.ApplyConfig{
 		StateDir: stateDir, ConfigFile: configFile, Binary: bin, Running: version, Key: a.updateKey,
-		UpdaterDir: a.updaterDir, TrustedBase: a.trustedBase,
+		UpdaterDir: a.updaterDir, TrustedBase: a.trustedBase, ServiceUID: serviceUID,
 		Systemctl: a.systemctl, UID: uid, Logger: log, Now: a.now,
 	}, nil
 }
 
-func (a app) cmdApplyUpdate(log *slog.Logger, stateDir, configFile string) error {
-	cfg, err := a.applyConfig(log, stateDir, configFile)
+func (a app) cmdApplyUpdate(log *slog.Logger, stateDir, configFile, serviceUser string) error {
+	cfg, err := a.applyConfig(log, stateDir, configFile, serviceUser)
 	if err != nil {
 		return err
 	}
@@ -80,8 +97,8 @@ func (a app) cmdApplyUpdate(log *slog.Logger, stateDir, configFile string) error
 	return nil
 }
 
-func (a app) cmdRollbackCheck(log *slog.Logger, stateDir, configFile string) error {
-	cfg, err := a.applyConfig(log, stateDir, configFile)
+func (a app) cmdRollbackCheck(log *slog.Logger, stateDir, configFile, serviceUser string) error {
+	cfg, err := a.applyConfig(log, stateDir, configFile, serviceUser)
 	if err != nil {
 		return err
 	}

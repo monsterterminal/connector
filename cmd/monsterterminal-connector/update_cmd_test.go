@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -404,6 +405,39 @@ func TestApplyUpdateRifiutaIlNonFirmatoEIlConnettoreLoRiporta(t *testing.T) {
 	}
 	stop()
 	waitExit(t, done)
+	// -service-user: l'utente del servizio dell'unità. Quello giusto (l'owner di <state>, qui l'utente
+	// dei test; in produzione anche root con --user root) passa; uno diverso ferma l'updater senza
+	// toccare nulla; uno inesistente è un errore d'uso.
+	me, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb, err = update.OpenMailbox(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(h.confFile, []byte("auto_update=yes\n"), 0o644)
+	if err := mb.WriteRequest(canon, make([]byte, 64), "0.7.0"); err != nil {
+		t.Fatal(err)
+	}
+	mb.Close()
+	_ = os.WriteFile(filepath.Join(dir, update.FileBinary), h.body, 0o600)
+	if code := h.app().run(context.Background(), []string{"apply-update", "-state-dir", h.stateDir, "-service-user", me.Username}); code != exitError || !strings.Contains(h.stderr.String(), update.ReasonBadSignature) {
+		t.Fatalf("apply-update con -service-user %s: uscita %d\n%s", me.Username, code, h.stderr.String())
+	}
+	otherUser := "root"
+	if me.Uid == "0" {
+		otherUser = "nobody"
+	}
+	if code := h.app().run(context.Background(), []string{"apply-update", "-state-dir", h.stateDir, "-service-user", otherUser}); code != exitError || !strings.Contains(h.stderr.String(), "utente del servizio") {
+		t.Fatalf("apply-update con -service-user %s: uscita %d\n%s", otherUser, code, h.stderr.String())
+	}
+	if code := h.app().run(context.Background(), []string{"apply-update", "-state-dir", h.stateDir, "-service-user", "utente-che-non-esiste"}); code != exitError {
+		t.Fatalf("apply-update con un utente inesistente: uscita %d", code)
+	}
+	if got, _ := os.ReadFile(h.bin); string(got) != "binario installato "+version {
+		t.Fatal("binario installato cambiato")
+	}
 	// Senza -state-dir valido i sottocomandi non vogliono argomenti in più.
 	if code := h.app().run(context.Background(), []string{"apply-update", "extra"}); code != exitUsage {
 		t.Fatalf("argomento in più: %d", code)

@@ -434,6 +434,49 @@ func TestApplyCartellaDellUpdater(t *testing.T) {
 	}
 }
 
+// Il servizio può girare come root (`install.sh --user root`): <state> è di root e l'updater lo accetta
+// quando l'utente del servizio è root; qui si prova con l'uid corrente, owner di <state>. Con un utente
+// del servizio diverso dall'owner la cassetta non si apre, niente si installa, e apply.request resta
+// (toglierlo non sarebbe sicuro: ci pensa il limite di avvio dell'unità). Se invece la cassetta non si
+// apre per un symlink al posto di update/, apply.request si toglie lo stesso.
+func TestApplyUtenteDelServizio(t *testing.T) {
+	b := newBench(t)
+	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
+	cfg := b.cfg()
+	cfg.ServiceUID = os.Getuid()
+	if err := Apply(cfg); err != nil {
+		t.Fatalf("utente del servizio = owner di <state>: %v", err)
+	}
+	b.binaryIs(t, "binario nuovo 0.7.0")
+
+	b = newBench(t)
+	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
+	cfg = b.cfg()
+	cfg.ServiceUID = os.Getuid() + 1
+	if err := Apply(cfg); err == nil || !strings.Contains(err.Error(), "utente del servizio") {
+		t.Fatalf("utente del servizio diverso dall'owner: %v", err)
+	}
+	b.binaryIs(t, "binario installato 0.6.1")
+	if _, err := os.Lstat(filepath.Join(b.updateDir, FileApplyRequest)); err != nil {
+		t.Fatal("apply.request toccato in una cartella di stato non dell'utente del servizio")
+	}
+	if len(b.calls) != 0 {
+		t.Fatalf("systemctl: %v", b.calls)
+	}
+
+	b = newBench(t)
+	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
+	_ = os.Rename(b.updateDir, filepath.Join(b.state, "altrove"))
+	_ = os.Symlink(filepath.Join(b.state, "altrove"), b.updateDir)
+	if err := Apply(b.cfg()); err == nil {
+		t.Fatal("symlink al posto di update/ accettato")
+	}
+	b.binaryIs(t, "binario installato 0.6.1")
+	if _, err := os.Lstat(filepath.Join(b.state, "altrove", FileApplyRequest)); !os.IsNotExist(err) {
+		t.Fatal("apply.request non tolto: l'unità path ripartirebbe in ciclo")
+	}
+}
+
 // Se il timer di ritorno non si arma, il binario non si scambia: niente rete, niente installazione.
 func TestApplySenzaTimerNonInstalla(t *testing.T) {
 	b := newBench(t)

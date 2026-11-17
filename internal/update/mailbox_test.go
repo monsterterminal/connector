@@ -209,26 +209,53 @@ func TestCartellaDellUpdater(t *testing.T) {
 }
 
 // La cassetta vista da root: dal Root di <state>, la sottocartella update/ dello stesso utente, mai
-// un symlink e mai una cartella di root.
+// un symlink. <state> deve essere dell'utente del servizio: quello dell'unità (root compreso, quando
+// il servizio gira come root: qui lo si prova con l'uid corrente, che è l'owner della cartella),
+// oppure, senza indicazione, l'owner stesso di <state>.
 func TestCassettaVistaDaRoot(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 	_ = os.MkdirAll(filepath.Join(state, UpdateSubdir), 0o700)
-	mb, err := OpenMailboxUnder(state)
-	if err != nil {
-		t.Fatal(err)
+	for _, uid := range []int{-1, os.Getuid()} {
+		mb, err := OpenMailboxUnder(state, uid)
+		if err != nil {
+			t.Fatalf("utente del servizio %d: %v", uid, err)
+		}
+		mb.Close()
 	}
-	mb.Close()
+	if _, err := OpenMailboxUnder(state, os.Getuid()+1); err == nil {
+		t.Fatal("cartella di stato di un altro utente accettata")
+	}
 	_ = os.RemoveAll(filepath.Join(state, UpdateSubdir))
 	_ = os.Symlink(t.TempDir(), filepath.Join(state, UpdateSubdir))
-	if _, err := OpenMailboxUnder(state); err == nil {
+	if _, err := OpenMailboxUnder(state, -1); err == nil {
 		t.Fatal("symlink al posto di update/ accettato")
 	}
 	_ = os.Remove(filepath.Join(state, UpdateSubdir))
-	if _, err := OpenMailboxUnder(state); err == nil {
+	if _, err := OpenMailboxUnder(state, -1); err == nil {
 		t.Fatal("update/ assente accettata")
 	}
-	if _, err := OpenMailboxUnder(filepath.Join(state, "non-esiste")); err == nil {
+	if _, err := OpenMailboxUnder(filepath.Join(state, "non-esiste"), -1); err == nil {
 		t.Fatal("stato assente accettato")
+	}
+	// apply.request si toglie anche senza cassetta, ma solo se <state> è dell'utente del servizio.
+	other := filepath.Join(state, "altrove")
+	_ = os.Mkdir(other, 0o700)
+	_ = os.WriteFile(filepath.Join(other, FileApplyRequest), []byte("0.7.0\n"), 0o600)
+	_ = os.Symlink(other, filepath.Join(state, UpdateSubdir))
+	if err := RemoveRequestBestEffort(state, os.Getuid()+1); err == nil {
+		t.Fatal("apply.request toccato in una cartella di stato di un altro utente")
+	}
+	if _, err := os.Lstat(filepath.Join(other, FileApplyRequest)); err != nil {
+		t.Fatal("apply.request tolto nonostante il rifiuto")
+	}
+	if err := RemoveRequestBestEffort(state, os.Getuid()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(other, FileApplyRequest)); !os.IsNotExist(err) {
+		t.Fatal("apply.request non tolto")
+	}
+	if err := RemoveRequestBestEffort(state, -1); err != nil {
+		t.Fatalf("senza richiesta da togliere: %v", err)
 	}
 }
 

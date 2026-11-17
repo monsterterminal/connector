@@ -243,17 +243,20 @@ func OpenMailbox(path string) (*Mailbox, error) {
 }
 
 // OpenMailboxUnder è l'apertura di root: dal Root di <state> (il cui genitore è di root), la
-// sottocartella update/ senza seguire link, e deve appartenere allo stesso utente di <state>, che
-// non è root. Così root non scrive mai in una cartella che non sia quella dell'utente del connettore.
-func OpenMailboxUnder(stateDir string) (*Mailbox, error) {
+// sottocartella update/ senza seguire link. <state> deve appartenere all'utente del servizio
+// (serviceUID: quello dell'unità, root compreso se il servizio gira come root con `--user root`;
+// -1 = l'owner di <state>, che install.sh crea per l'utente del servizio sotto un genitore di root) e
+// update/ allo stesso utente. Così root non scrive mai in una cartella che non sia quella dell'utente
+// del connettore.
+func OpenMailboxUnder(stateDir string, serviceUID int) (*Mailbox, error) {
 	state, stateInfo, err := OpenDir(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("cartella di stato %s: %w", stateDir, err)
 	}
 	defer state.Close()
 	owner := UID(stateInfo)
-	if owner == 0 {
-		return nil, fmt.Errorf("%s appartiene a root: attesa la cartella dell'utente del connettore", stateDir)
+	if serviceUID >= 0 && owner != serviceUID {
+		return nil, fmt.Errorf("%s appartiene a uid %d, l'utente del servizio è %d", stateDir, owner, serviceUID)
 	}
 	sub, info, err := state.OpenSub(UpdateSubdir)
 	if err != nil {
@@ -321,6 +324,22 @@ func (m *Mailbox) RemoveDownload() {
 	for _, n := range []string{FileBinary, FileManifest, FileSignature, FileApplyRequest} {
 		_ = m.Remove(n)
 	}
+}
+
+// RemoveRequestBestEffort toglie update/apply.request quando la cassetta non si è potuta aprire, così
+// l'unità path non riparte in ciclo: SOLO se <state> appartiene all'utente del servizio (altrimenti
+// non si tocca niente e ci pensa il limite di avvio dell'unità). Passa dal Root di <state>: un
+// symlink che porta fuori è rifiutato da os.Root, l'unlink non segue l'ultimo componente.
+func RemoveRequestBestEffort(stateDir string, serviceUID int) error {
+	state, info, err := OpenDir(stateDir)
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+	if serviceUID >= 0 && UID(info) != serviceUID {
+		return fmt.Errorf("%s appartiene a uid %d, l'utente del servizio è %d: non tocco apply.request", stateDir, UID(info), serviceUID)
+	}
+	return state.Remove(filepath.Join(UpdateSubdir, FileApplyRequest))
 }
 
 // ConnectedMarker è il nome del marcatore della versione.

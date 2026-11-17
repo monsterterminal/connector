@@ -40,7 +40,8 @@ aggiunte: un backend che non conosce `update.check` non risponde e il connettore
   con `"security":true` ignora l'interruttore del backend, mai il file locale.
 - `hello.capabilities` dichiara `auto-update`. Le sessioni tmux non si toccano (`KillMode=process`):
   il banco lo prova.
-- `install.sh` scrive le tre unità in più (riscrivendole se esistono, con `TimeoutStartSec`), crea
+- `install.sh` scrive le tre unità in più (riscrivendole se esistono, con `TimeoutStartSec`,
+  `-service-user` dall'`User=` del servizio e `StartLimitBurst=3` sull'updater), crea
   `update/` e `/var/lib/monsterterminal-updater`; `--uninstall` le toglie insieme a `.prev`.
   `MT_ROLLBACK_AFTER` accorcia il timer **solo nei banchi** (e solo con `MT_BANCO=1`).
 - Rilasci: `packaging/release.json` (`{"security": false}`) decide `"security":true` nel manifest

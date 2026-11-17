@@ -70,9 +70,13 @@ type ApplyConfig struct {
 	Systemctl Systemctl
 	// UID è il proprietario atteso della cartella dell'updater e dei suoi antenati; -1 = l'utente che
 	// esegue (root nell'unità).
-	UID    int
-	Logger *slog.Logger
-	Now    func() time.Time
+	UID int
+	// ServiceUID è l'utente del servizio del connettore (User= dell'unità, dall'opzione -service-user;
+	// root se il servizio gira come root): <state> e update/ devono essere suoi. -1 = l'owner di
+	// <state>, che install.sh crea per l'utente del servizio sotto un genitore di root.
+	ServiceUID int
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 func (c *ApplyConfig) defaults() error {
@@ -140,9 +144,14 @@ func Apply(cfg ApplyConfig) (err error) {
 		return err
 	}
 	log := cfg.Logger
-	mb, err := OpenMailboxUnder(cfg.StateDir)
+	mb, err := OpenMailboxUnder(cfg.StateDir, cfg.ServiceUID)
 	if err != nil {
-		// Senza cassetta non si può nemmeno dire di no: resta il log.
+		// Senza cassetta non si può dire di no con apply.rejected: resta il log. Ma apply.request va
+		// tolto, se <state> è davvero dell'utente del servizio, altrimenti l'unità path ripartirebbe
+		// in ciclo (oltre, il limite di avvio dell'unità lo ferma comunque).
+		if rerr := RemoveRequestBestEffort(cfg.StateDir, cfg.ServiceUID); rerr != nil {
+			log.Error("apply.request non tolto", "errore", rerr.Error())
+		}
 		return fmt.Errorf("cassetta delle lettere: %w", err)
 	}
 	defer mb.Close()
@@ -348,7 +357,7 @@ func RollbackCheck(cfg ApplyConfig) (RollbackAction, error) {
 		log.Info("nessun aggiornamento in attesa: niente da fare")
 		return RollbackNothing, nil
 	}
-	mb, err := OpenMailboxUnder(cfg.StateDir)
+	mb, err := OpenMailboxUnder(cfg.StateDir, cfg.ServiceUID)
 	if err != nil {
 		return RollbackNothing, fmt.Errorf("cassetta delle lettere: %w", err)
 	}
