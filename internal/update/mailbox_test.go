@@ -238,10 +238,17 @@ func TestCassettaVistaDaRoot(t *testing.T) {
 		t.Fatal("stato assente accettato")
 	}
 	// apply.request si toglie anche senza cassetta, ma solo se <state> è dell'utente del servizio.
+	// Un symlink relativo che resta dentro <state> si attraversa; uno assoluto no: os.Root lo tratta
+	// come un'uscita dalla radice e rifiuta (allora resta il limite di avvio dell'unità).
 	other := filepath.Join(state, "altrove")
 	_ = os.Mkdir(other, 0o700)
 	_ = os.WriteFile(filepath.Join(other, FileApplyRequest), []byte("0.7.0\n"), 0o600)
 	_ = os.Symlink(other, filepath.Join(state, UpdateSubdir))
+	if err := RemoveRequestBestEffort(state, os.Getuid()); err == nil {
+		t.Fatal("symlink assoluto attraversato dal Root")
+	}
+	_ = os.Remove(filepath.Join(state, UpdateSubdir))
+	_ = os.Symlink("altrove", filepath.Join(state, UpdateSubdir))
 	if err := RemoveRequestBestEffort(state, os.Getuid()+1); err == nil {
 		t.Fatal("apply.request toccato in una cartella di stato di un altro utente")
 	}

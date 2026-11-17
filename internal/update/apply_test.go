@@ -468,7 +468,7 @@ func TestApplyUtenteDelServizio(t *testing.T) {
 	b = newBench(t)
 	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
 	_ = os.Rename(b.updateDir, filepath.Join(b.state, "altrove"))
-	_ = os.Symlink(filepath.Join(b.state, "altrove"), b.updateDir)
+	_ = os.Symlink("altrove", b.updateDir)
 	if err := Apply(b.cfg()); err == nil {
 		t.Fatal("symlink al posto di update/ accettato")
 	}
