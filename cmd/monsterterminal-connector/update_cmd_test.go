@@ -57,7 +57,8 @@ func newUpdateHarness(t *testing.T) *updateHarness {
 		t.Fatal(err)
 	}
 	h.files = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/monsterterminal-connector_0.7.0_linux_amd64") {
+		// Serve il binario di qualunque versione: il contenuto è h.body del momento.
+		if strings.HasSuffix(r.URL.Path, "_linux_amd64") {
 			_, _ = w.Write(h.body)
 			return
 		}
