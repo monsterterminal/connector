@@ -60,7 +60,8 @@ type Manager struct {
 	backendAuto bool // interruttore del backend (welcome/config.update); assente = acceso
 	busy        bool // un download è in corso
 	stop        chan struct{}
-	wg          sync.WaitGroup
+	loops       sync.WaitGroup // i cicli delle sessioni (Attach/Detach)
+	downloads   sync.WaitGroup // i download in sfondo
 }
 
 // New crea il gestore. La cartella Dir viene creata (0700) se manca.
@@ -121,7 +122,7 @@ func (m *Manager) Attach(out Out) {
 	stop := make(chan struct{})
 	m.stop = stop
 	m.mu.Unlock()
-	m.wg.Add(1)
+	m.loops.Add(1)
 	go m.loop(stop)
 }
 
@@ -138,11 +139,11 @@ func (m *Manager) Detach() {
 	m.mu.Unlock()
 }
 
-// Wait attende la fine dei lavori in sfondo (solo test).
-func (m *Manager) Wait() { m.wg.Wait() }
+// Wait attende la fine dei download in sfondo (solo test).
+func (m *Manager) Wait() { m.downloads.Wait() }
 
 func (m *Manager) loop(stop chan struct{}) {
-	defer m.wg.Done()
+	defer m.loops.Done()
 	m.reportMailbox()
 	m.sendCheck()
 	mailbox := time.NewTicker(m.cfg.MailboxInterval)
@@ -277,9 +278,9 @@ func (m *Manager) offer(u protocol.UpdateAvailable) {
 		m.cfg.Logger.Info("una richiesta di aggiornamento è già in attesa dell'updater: proposta ignorata", "versione", version)
 		return
 	}
-	m.wg.Add(1)
+	m.downloads.Add(1)
 	go func() {
-		defer m.wg.Done()
+		defer m.downloads.Done()
 		defer m.setBusy(false)
 		m.prepare(u.Manifest, sig)
 	}()
