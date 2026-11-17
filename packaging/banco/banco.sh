@@ -703,6 +703,19 @@ PY
 }
 results_json() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["updateResults"]))' "$STATUS/status.json"; }
 tmux_mt() { hx runuser -u monsterterminal -- env HOME=/home/monsterterminal tmux "$@"; }
+# Il PID del server tmux lo dice tmux stesso (#{pid}): il processo si chiama «tmux: server» e un pgrep
+# per nome è fragile.
+tmux_server_cgroup() {
+	local pid
+	pid=$(tmux_mt display-message -p -t prima-del-rilascio '#{pid}' 2>/dev/null | tr -d '\r')
+	[ -n "$pid" ] && hx cat "/proc/$pid/cgroup" 2>/dev/null
+}
+tmux_cgroup_ok() {
+	local srv main
+	srv=$(tmux_server_cgroup)
+	main=$(hx_sh 'cat "/proc/$(systemctl show -p MainPID --value monsterterminal-connector)/cgroup"')
+	[ -n "$srv" ] && [ "$srv" = "$main" ]
+}
 wait_tmux() {
 	# wait_tmux SESSIONE SECONDI: la sessione tmux dell'utente del connettore esiste
 	local i=0
@@ -745,9 +758,8 @@ cmd_update() {
 	tmux_mt kill-server 2>/dev/null || true
 	send_cmd '{"action":"session.open","session":"prima-del-rilascio"}'
 	assert "sessione tmux «prima-del-rilascio» aperta dal connettore entro 15 s" wait_tmux prima-del-rilascio 15
-	assert "il server tmux sta nello stesso cgroup del servizio (figlio del connettore, non del banco)" hx_sh 'pid=$(pgrep -u monsterterminal -f "^tmux: server" | head -n 1); main=$(systemctl show -p MainPID --value monsterterminal-connector); test -n "$pid" && test "$(cat "/proc/$pid/cgroup")" = "$(cat "/proc/$main/cgroup")"'
-	# il server tmux si chiama «tmux: server» (setproctitle): pgrep -x tmux non lo trova
-	msg "   cgroup del server tmux: $(hx_sh 'pid=$(pgrep -u monsterterminal -f "^tmux: server" | head -n 1); cat "/proc/$pid/cgroup" 2>/dev/null' | tr '\n' ' ')"
+	assert "il server tmux sta nello stesso cgroup del servizio (figlio del connettore, non del banco)" tmux_cgroup_ok
+	msg "   cgroup del server tmux: $(tmux_server_cgroup | tr '\n' ' ') — del servizio: $(hx_sh 'cat "/proc/$(systemctl show -p MainPID --value monsterterminal-connector)/cgroup"' | tr '\n' ' ')"
 
 	step "U2 — il backend finto spinge update.available v$UPD1 (firmato con la chiave del banco)"
 	local pid_before
