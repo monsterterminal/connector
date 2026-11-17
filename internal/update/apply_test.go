@@ -356,7 +356,7 @@ func TestApplySenzaTimerNonInstalla(t *testing.T) {
 func TestDecideRollback(t *testing.T) {
 	cases := []struct {
 		pending, connected bool
-		want                   RollbackAction
+		want               RollbackAction
 	}{
 		{false, false, RollbackNothing}, {false, true, RollbackNothing},
 		{true, true, RollbackDisarm}, {true, false, RollbackRestore},

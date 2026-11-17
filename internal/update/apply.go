@@ -399,4 +399,3 @@ func copyNoFollow(src, dst string, max int64, mode fs.FileMode) (string, error) 
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
-
