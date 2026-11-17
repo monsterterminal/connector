@@ -8,15 +8,30 @@
 #   banco.sh install    il comando di una riga nel container host + asserzioni (B2, B3, B7, B8)
 #   banco.sh negative   firma sbagliata, token malformato, token sconosciuto (B10) ⇒ nessuna installazione
 #   banco.sh spazi      dopo install: un altro spazio di lavoro non prende il server (ADR 0409 A2)
+#   banco.sh update     il backend finto spinge un rilascio firmato v0.0.1-banco: updater root, .prev,
+#                       sessione tmux viva, update.result ok, connector.restarted update (ADR 0438 D3)
+#   banco.sh rollback   v0.0.2-banco con hello rotto: dopo MT_ROLLBACK_AFTER il timer ripristina
+#                       v0.0.1-banco, update.result rolled-back (ADR 0438 D3 punto 4)
+#   banco.sh update-negative  firma errata, chiave delle ricette, downgrade, sha diverso, URL fuori
+#                       repo, interruttore del backend, security, auto_update locale, binario non
+#                       firmato messo a mano in update/, symlink in update/ ⇒ niente installato
 #   banco.sh uninstall  --uninstall --purge ⇒ servizio, binario, configurazione e stato assenti
 #   banco.sh status     lo status-file del backend finto
-#   banco.sh all        up, negative, install, spazi, uninstall (lascia il banco in piedi per guardarlo)
+#   banco.sh all        up, negative, install, spazi, update, rollback, update-negative, uninstall
+#                       (lascia il banco in piedi per guardarlo)
 #   banco.sh down       rimuove container, rete, immagini mt-banco-* e i file di lavoro (non la cache go)
 #
 # Variabili: BANCO_HOME (default ~/mt-banco), BANCO_VERSION (0.0.0-banco), BANCO_ASSETS (cartella con
 # gli asset di una release già compilata: binario e install.sh, al posto della build locale),
-# BANCO_GO_IMAGE (golang:1.27), BANCO_GO_CACHE (~/.cache/go-banco), BANCO_CGROUPNS (private|host).
+# BANCO_GO_IMAGE (golang:1.27), BANCO_GO_CACHE (~/.cache/go-banco), BANCO_CGROUPNS (private|host),
+# BANCO_ROLLBACK_AFTER (20s: l'attesa del ritorno scritta nel timer da install.sh, solo banchi).
 # Tutto ciò che il banco crea sulla macchina si chiama mt-banco-*.
+#
+# L'aggiornamento automatico vuole un connettore che riconosca la chiave del banco: `up` copia il
+# sorgente in $BANCO_HOME/src e sostituisce in internal/signing/signing.go le due chiavi pubbliche
+# (aggiornamenti e ricette) con quelle usa-e-getta del banco, poi compila da lì. Il codice del
+# repository non ha nessuna via di banco: il prefisso dell'URL resta quello vero di GitHub, e il
+# banco risponde come github.com (alias di rete e SAN del certificato di nginx).
 #
 # Le asserzioni passano a «sh -c» comandi fra apici singoli che girano NEL CONTAINER: per shellcheck
 # le espansioni sembrano sbagliate (SC2016), ma è la forma voluta.
@@ -31,6 +46,7 @@ BANCO_ASSETS=${BANCO_ASSETS:-}
 GO_IMAGE=${BANCO_GO_IMAGE:-golang:1.27}
 GO_CACHE=${BANCO_GO_CACHE:-$HOME/.cache/go-banco}
 CGROUPNS=${BANCO_CGROUPNS:-private}
+ROLLBACK_AFTER=${BANCO_ROLLBACK_AFTER:-45s}
 NGINX_IMAGE=nginx:1.27-alpine
 
 NET=mt-banco
@@ -48,7 +64,15 @@ CERTS=$BANCO_HOME/certs
 DIST=$BANCO_HOME/dist
 WWW=$BANCO_HOME/www
 STATUS=$BANCO_HOME/status
+SRCCOPY=$BANCO_HOME/src
 RELDIR=$WWW/releases/download/v$BANCO_VERSION
+# Le release «di GitHub» del banco: lo stesso nginx, raggiunto come github.com (ADR 0438 D3).
+GHDIR=$WWW/monsterterminal/connector/releases/download
+GH_PREFIX=https://github.com/monsterterminal/connector/releases/download
+# Versioni dei rilasci di aggiornamento: v1 buona, v2 con hello rotto (ritorno), v3 di sicurezza.
+UPD1=0.0.1-banco
+UPD2=0.0.2-banco
+UPD3=0.0.3-banco
 MARKER=$BANCO_HOME/.mt-banco
 
 fails=0
@@ -97,6 +121,11 @@ make_keys() {
 	# una seconda chiave, mai usata per il rilascio: firma «perfetta» di un altro per la prova negativa
 	openssl genpkey -algorithm ed25519 -out "$KEYS/impostore.key"
 	chmod 0600 "$KEYS/impostore.key"
+	# la chiave delle ricette del banco (§1.17: due chiavi, mai scambiate): entra nel binario al posto
+	# di mt-recipes-2026 e serve a provare che un manifest firmato con lei non si installa
+	openssl genpkey -algorithm ed25519 -out "$KEYS/recipes.key"
+	chmod 0600 "$KEYS/recipes.key"
+	openssl pkey -in "$KEYS/recipes.key" -pubout -out "$KEYS/recipes.pub"
 	FINGERPRINT=$(openssl pkey -pubin -in "$KEYS/updates.pub" -outform DER | sha256sum | cut -d' ' -f1)
 	msg "impronta della chiave del banco: $FINGERPRINT"
 }
@@ -108,10 +137,13 @@ make_certs() {
 		-subj "/CN=MonsterTerminal banco CA (usa-e-getta)" \
 		-addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
 		-keyout "$CERTS/ca.key" -out "$CERTS/ca.crt" 2>/dev/null
-	local name
+	local name san
 	for name in releases.banco connect.banco; do
+		san="DNS:$name"
+		# releases.banco risponde anche come github.com: l'URL degli aggiornamenti resta quello vero
+		[ "$name" = releases.banco ] && san="DNS:$name,DNS:github.com"
 		openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-			-subj "/CN=$name" -addext "subjectAltName=DNS:$name" \
+			-subj "/CN=$name" -addext "subjectAltName=$san" \
 			-addext "extendedKeyUsage=serverAuth" \
 			-keyout "$CERTS/$name.key" -out "$CERTS/$name.csr" 2>/dev/null
 		openssl x509 -req -in "$CERTS/$name.csr" -CA "$CERTS/ca.crt" -CAkey "$CERTS/ca.key" \
@@ -126,13 +158,37 @@ make_certs() {
 
 go_in_docker() {
 	# una build alla volta, come utente corrente (niente file di root nella cache), senza VCS
-	# (il sorgente copiato non ha .git) e con la cache dei moduli e dei build riusata fra i giri
+	# (il sorgente copiato non ha .git) e con la cache dei moduli e dei build riusata fra i giri;
+	# il sorgente è la copia con le chiavi del banco (make_src)
 	mkdir -p "$GO_CACHE/mod" "$GO_CACHE/build"
 	docker run --rm --user "$(id -u):$(id -g)" \
 		-e HOME=/tmp -e GOCACHE=/gocache -e GOMODCACHE=/go/pkg/mod -e GOFLAGS=-buildvcs=false \
 		-e CGO_ENABLED=0 -e GOOS=linux -e GOARCH="$ARCH" \
-		-v "$SRC:/src:ro" -v "$GO_CACHE/mod:/go/pkg/mod" -v "$GO_CACHE/build:/gocache" \
+		-v "$SRCCOPY:/src:ro" -v "$GO_CACHE/mod:/go/pkg/mod" -v "$GO_CACHE/build:/gocache" \
 		-v "$DIST:/out" -w /src "$GO_IMAGE" sh -c "$1"
+}
+
+# La copia del sorgente con le chiavi pubbliche del banco al posto di quelle di produzione, in modo
+# coerente con install.sh del banco (make_install_sh). Solo i blocchi PEM cambiano; la controprova
+# ricalcola l'impronta della chiave scritta nel file.
+make_src() {
+	step "Copia del sorgente con le chiavi del banco in $SRCCOPY"
+	rm -rf "${SRCCOPY:?}"
+	mkdir -p "$SRCCOPY"
+	tar --exclude=.git -C "$SRC" -cf - . | tar -C "$SRCCOPY" -xf -
+	local sg=$SRCCOPY/internal/signing/signing.go
+	awk -v upd="$(cat "$KEYS/updates.pub")" -v rec="$(cat "$KEYS/recipes.pub")" '
+		/^\tUpdatesPEM = `/ { print "\tUpdatesPEM = `" upd "`"; skipping = 1; next }
+		/^\tRecipesPEM = `/ { print "\tRecipesPEM = `" rec "`"; skipping = 1; next }
+		skipping && /-----END PUBLIC KEY-----`$/ { skipping = 0; next }
+		skipping { next }
+		{ print }
+	' "$SRC/internal/signing/signing.go" >"$sg"
+	local got
+	got=$(sed -n '/^\tUpdatesPEM = `/,/-----END PUBLIC KEY-----`$/p' "$sg" | sed 's/^\tUpdatesPEM = `//; s/`$//' | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
+	[ "$got" = "$FINGERPRINT" ] || die "signing.go del banco incoerente: impronta $got, attesa $FINGERPRINT"
+	grep -q "$(sed -n 2p "$KEYS/recipes.pub")" "$sg" || die "chiave delle ricette del banco non sostituita"
+	ok "signing.go del banco porta la chiave degli aggiornamenti $FINGERPRINT e quella delle ricette del banco"
 }
 
 build_dist() {
@@ -147,15 +203,23 @@ build_dist() {
 		step "Build del backend finto con $GO_IMAGE"
 		go_in_docker "go build -trimpath -o /out/mt-fakeserver ./cmd/mt-fakeserver"
 	else
-		step "Build riproducibile del connettore (VERSION=$BANCO_VERSION, $ARCH) e del backend finto con $GO_IMAGE"
+		step "Build riproducibile del connettore (VERSION=$BANCO_VERSION, $ARCH), dei tre rilasci di aggiornamento e del backend finto con $GO_IMAGE"
 		load_note
+		# v0.0.2-banco è compilato con main.bancoBrokenHello=1: registra l'avvio e non si collega mai
+		# (ADR 0438 D3 punto 4: il timer di ritorno lo toglie di mezzo). Un rilascio vero non lo imposta.
 		go_in_docker "go build -trimpath -ldflags '-s -w -buildid= -X main.version=$BANCO_VERSION' -o /out/$ASSET ./cmd/monsterterminal-connector \
+			&& go build -trimpath -ldflags '-s -w -buildid= -X main.version=$UPD1' -o /out/$(asset_name "$UPD1") ./cmd/monsterterminal-connector \
+			&& go build -trimpath -ldflags '-s -w -buildid= -X main.version=$UPD2 -X main.bancoBrokenHello=1' -o /out/$(asset_name "$UPD2") ./cmd/monsterterminal-connector \
+			&& go build -trimpath -ldflags '-s -w -buildid= -X main.version=$UPD3' -o /out/$(asset_name "$UPD3") ./cmd/monsterterminal-connector \
 			&& go build -trimpath -o /out/mt-fakeserver ./cmd/mt-fakeserver"
 		sed "s/@VERSION@/$BANCO_VERSION/" "$SRC/packaging/install.sh" >"$DIST/install.sh.orig"
+		chmod 0755 "$DIST/$(asset_name "$UPD1")" "$DIST/$(asset_name "$UPD2")" "$DIST/$(asset_name "$UPD3")"
 	fi
 	chmod 0755 "$DIST/$ASSET" "$DIST/mt-fakeserver"
 	msg "binario: $(sha256sum "$DIST/$ASSET")"
 }
+
+asset_name() { echo "monsterterminal-connector_${1}_linux_${ARCH}"; }
 
 # install.sh del banco: la chiave pubblica e l'impronta di produzione sostituite IN MODO COERENTE con
 # la chiave usa-e-getta, così lo script verifica la firma per davvero (check_tools confronta le due).
@@ -193,13 +257,37 @@ make_release() {
 	chmod -R a+rX "$WWW"
 	ok "firma di 64 byte verificata con la chiave pubblica del banco"
 	cat "$RELDIR/SHA256SUMS" >&2
+	[ -z "$BANCO_ASSETS" ] || return 0
+	step "Rilasci di aggiornamento «su GitHub» (ADR 0438 D2): manifest canonici firmati per v$UPD1, v$UPD2, v$UPD3 (security)"
+	local v sec
+	for v in "$UPD1" "$UPD2" "$UPD3"; do
+		mkdir -p "$GHDIR/v$v"
+		cp "$DIST/$(asset_name "$v")" "$GHDIR/v$v/"
+		sec=""
+		[ "$v" = "$UPD3" ] && sec='"security":true,'
+		make_manifest "$v" "$(asset_name "$v")" "$(sha256sum "$DIST/$(asset_name "$v")" | cut -d' ' -f1)" "$sec" >"$GHDIR/v$v/update-manifest-linux-$ARCH.json"
+		openssl pkeyutl -sign -inkey "$KEYS/updates.key" -rawin -in "$GHDIR/v$v/update-manifest-linux-$ARCH.json" -out "$GHDIR/v$v/update-manifest-linux-$ARCH.json.sig"
+		msg "   v$v: $(cat "$GHDIR/v$v/update-manifest-linux-$ARCH.json")"
+	done
+	chmod -R a+rX "$WWW"
+	ok "tre manifest firmati con la chiave del banco"
 }
+
+# make_manifest VERSIONE ASSET SHA [SECURITY-FRAMMENTO]: la forma canonica ESATTA di release.yml
+# (chiavi in ordine alfabetico, senza spazi; security solo se presente).
+make_manifest() {
+	printf '{"arch":"%s","minProtocol":1,"os":"linux",%s"sha256":"%s","url":"%s/v%s/%s","version":"%s"}' \
+		"$ARCH" "${4:-}" "$3" "$GH_PREFIX" "$1" "$2" "$1"
+}
+
+# sign_b64 FILE CHIAVE: la firma Ed25519 grezza del file, in base64 (common.json#signature).
+sign_b64() { openssl pkeyutl -sign -inkey "$2" -rawin -in "$1" | base64 | tr -d '\n'; }
 
 start_containers() {
 	step "Rete $NET e container: nginx (releases.banco), backend finto (connect.banco), host systemd"
 	docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
 	docker rm -f "$REL_C" "$FAKE_C" "$HOST_C" >/dev/null 2>&1 || true
-	docker run -d --name "$REL_C" --network "$NET" --network-alias releases.banco \
+	docker run -d --name "$REL_C" --network "$NET" --network-alias releases.banco --network-alias github.com \
 		-v "$WWW:/srv/www:ro" -v "$here/nginx-releases.conf:/etc/nginx/conf.d/default.conf:ro" \
 		-v "$CERTS/releases.banco.crt:/etc/nginx/tls/releases.banco.crt:ro" \
 		-v "$CERTS/releases.banco.key:/etc/nginx/tls/releases.banco.key:ro" \
@@ -211,7 +299,7 @@ start_containers() {
 		--user "$(id -u):$(id -g)" -v "$CERTS:/certs:ro" -v "$STATUS:/status" \
 		"$FAKE_IMG" -listen :8443 -tls-cert /certs/connect.banco.crt -tls-key /certs/connect.banco.key \
 		-tokens 3 -token-ttl 1h -token-file /status/install-tokens -status-file /status/status.json \
-		-other-tokens 1 -other-token-file /status/other-tokens >/dev/null
+		-other-tokens 1 -other-token-file /status/other-tokens -command-dir /status/cmd >/dev/null
 
 	# --privileged: ammesso SOLO perché il container è usa-e-getta, senza porte pubblicate, e systemd
 	# come PID 1 lo richiede; --cgroupns=host monta anche il cgroup della macchina (fallback).
@@ -240,6 +328,9 @@ start_containers() {
 	hx update-ca-certificates >/dev/null 2>&1
 	assert "machine-id generato da systemd" hx_sh 'test "$(wc -c </etc/machine-id)" -eq 33'
 	assert "releases.banco in https con la CA del banco" hx curl -fsS --proto '=https' --tlsv1.2 -o /dev/null "https://releases.banco/install.sh"
+	if [ -z "$BANCO_ASSETS" ]; then
+		assert "github.com (alias del banco) serve il manifest di v$UPD1 in https" hx curl -fsS --proto '=https' --tlsv1.2 -o /dev/null "$GH_PREFIX/v$UPD1/update-manifest-linux-$ARCH.json"
+	fi
 	assert "connect.banco:8443 risponde (405 a GET /v1/register)" hx_sh 'test "$(curl -s -o /dev/null -w "%{http_code}" https://connect.banco:8443/v1/register)" = 405'
 	assert "status-file iniziale: 0 registrazioni, 3 token coniati" \
 		sh -c "grep -q '\"tokensMinted\": 3' '$STATUS/status.json' && grep -q '\"registrations\": \\[\\]' '$STATUS/status.json'"
@@ -256,6 +347,7 @@ cmd_up() {
 	mkdir -p "$BANCO_HOME" && : >"$MARKER"
 	make_keys
 	make_certs
+	make_src
 	build_dist
 	make_install_sh
 	make_release
@@ -282,7 +374,8 @@ run_install() {
 	local tok=$1 log=$2
 	shift 2
 	local envf="$STATUS/env.$$"
-	(umask 077 && printf 'MONSTERTERMINAL_INSTALL_TOKEN=%s\n' "$tok" >"$envf")
+	# MT_ROLLBACK_AFTER: l'attesa del ritorno scritta nel timer, accorciata SOLO qui (install.sh lo dice)
+	(umask 077 && printf 'MONSTERTERMINAL_INSTALL_TOKEN=%s\nMT_ROLLBACK_AFTER=%s\nMT_BANCO=1\n' "$tok" "$ROLLBACK_AFTER" >"$envf")
 	local rc=0
 	docker exec --env-file "$envf" "$HOST_C" sh -c \
 		"curl -fsSL --proto '=https' --tlsv1.2 https://releases.banco/install.sh | sh -s -- --server $SERVER_URL --releases-url $RELEASES_URL $*" \
@@ -444,8 +537,10 @@ cmd_spazi() {
 snapshot_host() {
 	hx_sh 'for f in /usr/local/bin/monsterterminal-connector /etc/monsterterminal/connector.conf /etc/systemd/system/monsterterminal-connector.service /var/lib/monsterterminal/host-token; do if [ -e "$f" ]; then sha256sum "$f"; else echo "assente $f"; fi; done'
 }
-downloads_count() { docker logs "$REL_C" 2>&1 | grep -c 'GET /releases/download/' || true; }
-binary_downloads() { docker logs "$REL_C" 2>&1 | grep -c "GET /releases/download/.*/monsterterminal-connector_" || true; }
+# Le richieste a nginx, sia come releases.banco (/releases/download/) sia come github.com
+# (/monsterterminal/connector/releases/download/).
+downloads_count() { docker logs "$REL_C" 2>&1 | grep -cE 'GET (/monsterterminal/connector)?/releases/download/' || true; }
+binary_downloads() { docker logs "$REL_C" 2>&1 | grep -cE "GET (/monsterterminal/connector)?/releases/download/.*/monsterterminal-connector_" || true; }
 
 cmd_negative() {
 	require_up
@@ -533,6 +628,333 @@ cmd_uninstall() {
 	verdict "uninstall"
 }
 
+# ---------- aggiornamento automatico (ADR 0438 D3, D4, D6) ----------
+
+# Il backend finto si comanda con file JSON in $STATUS/cmd (mt-fakeserver -command-dir): niente porte.
+cmd_n=0
+send_cmd() {
+	cmd_n=$((cmd_n + 1))
+	mkdir -p "$STATUS/cmd"
+	local f="$STATUS/cmd/$(date +%s)-$$-$cmd_n.json"
+	printf '%s\n' "$1" >"$f.tmp" && mv "$f.tmp" "$f"
+	# il fakeserver li consuma ogni 250 ms
+	local i=0
+	while [ -e "$f" ] && [ $i -lt 40 ]; do i=$((i + 1)); sleep 0.25; done
+	[ ! -e "$f" ] || die "il backend finto non ha consumato il comando $f"
+}
+# push_manifest FILE-MANIFEST CHIAVE: update.available spinto a tutti gli host collegati.
+push_manifest() {
+	send_cmd "{\"action\":\"push\",\"manifest\":$(cat "$1"),\"signature\":\"$(sign_b64 "$1" "$2")\"}"
+}
+backend_switch() {
+	if [ "$1" = assente ]; then send_cmd '{"action":"auto-update"}'; else send_cmd "{\"action\":\"auto-update\",\"value\":$1}"; fi
+}
+installed_sha() { hx sha256sum /usr/local/bin/monsterterminal-connector | cut -d' ' -f1; }
+asset_sha() { sha256sum "$DIST/$(asset_name "$1")" | cut -d' ' -f1; }
+wait_binary() {
+	# wait_binary SHA SECONDI: il binario installato ha questo sha
+	local i=0
+	while [ $i -lt "$2" ]; do
+		[ "$(installed_sha)" = "$1" ] && return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+wait_gone() {
+	# wait_gone PERCORSO SECONDI: il file nel container non c'è più
+	local i=0
+	while [ $i -lt "$2" ]; do
+		hx test -e "$1" || return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+# wait_result VERSIONE ESITO MOTIVO SECONDI: nello status-file c'è un update.result così (motivo
+# vuoto = qualunque).
+wait_result() {
+	local i=0
+	while [ $i -lt "$4" ]; do
+		python3 - "$STATUS/status.json" "$1" "$2" "$3" <<'PY' 2>/dev/null && return 0
+import json, sys
+d = json.load(open(sys.argv[1]))
+v, o, r = sys.argv[2], sys.argv[3], sys.argv[4]
+ok = any(x["version"] == v and x["outcome"] == o and (r == "" or x.get("reason", "") == r) for x in d["updateResults"])
+sys.exit(0 if ok else 1)
+PY
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+# wait_restart PRECEDENTE VERSIONE MOTIVO SECONDI: nello status-file c'è un connector.restarted così.
+wait_restart() {
+	local i=0
+	while [ $i -lt "$4" ]; do
+		python3 - "$STATUS/status.json" "$1" "$2" "$3" <<'PY' 2>/dev/null && return 0
+import json, sys
+d = json.load(open(sys.argv[1]))
+ok = any(x["previousVersion"] == sys.argv[2] and x["version"] == sys.argv[3] and x["reason"] == sys.argv[4] for x in d["restarts"])
+sys.exit(0 if ok else 1)
+PY
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+results_json() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["updateResults"]))' "$STATUS/status.json"; }
+tmux_mt() { hx runuser -u monsterterminal -- env HOME=/home/monsterterminal tmux "$@"; }
+# Il PID del server tmux lo dice tmux stesso (#{pid}): il processo si chiama «tmux: server» e un pgrep
+# per nome è fragile.
+tmux_server_cgroup() {
+	local pid
+	pid=$(tmux_mt display-message -p -t prima-del-rilascio '#{pid}' 2>/dev/null | tr -d '\r')
+	[ -n "$pid" ] && hx cat "/proc/$pid/cgroup" 2>/dev/null
+}
+tmux_cgroup_ok() {
+	local srv main
+	srv=$(tmux_server_cgroup)
+	main=$(hx_sh 'cat "/proc/$(systemctl show -p MainPID --value monsterterminal-connector)/cgroup"')
+	[ -n "$srv" ] && [ "$srv" = "$main" ]
+}
+wait_tmux() {
+	# wait_tmux SESSIONE SECONDI: la sessione tmux dell'utente del connettore esiste
+	local i=0
+	while [ $i -lt "$2" ]; do
+		tmux_mt has-session -t "$1" >/dev/null 2>&1 && return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+require_update_bench() {
+	require_up
+	need python3
+	[ -z "$BANCO_ASSETS" ] || die "l'aggiornamento automatico vuole la build locale (il connettore con la chiave del banco), non BANCO_ASSETS"
+	hx test -s /var/lib/monsterterminal/host-token || die "host non registrato: prima banco.sh install"
+	hx systemctl is-active --quiet monsterterminal-connector || die "servizio non attivo: prima banco.sh install"
+}
+mailbox_clean() {
+	# la cassetta delle lettere non deve trattenere niente dopo un esito
+	hx_sh '! test -e /var/lib/monsterterminal/update/apply.request && ! test -e /var/lib/monsterterminal/update/applied.json && ! test -e /var/lib/monsterterminal/update/apply.rejected && ! test -e /var/lib/monsterterminal/update/rolled-back.json && ! test -e /var/lib/monsterterminal-updater/pending.json'
+}
+
+cmd_update() {
+	require_update_bench
+	local sha0 sha1
+	sha0=$(asset_sha "$BANCO_VERSION")
+	sha1=$(asset_sha "$UPD1")
+	[ "$(installed_sha)" = "$sha0" ] || die "il binario installato non è v$BANCO_VERSION: banco.sh install prima di update"
+
+	step "U0 — prima dell'aggiornamento: il connettore chiede, il backend finto risponde update.none"
+	assert "status-file: ≥1 update.check entro 30 s (subito dopo welcome, ADR 0438 D4)" wait_status updateChecks 1 30
+	assert "status-file: ≥1 update.none" wait_status updateNones 1 5
+	assert "hello dichiara la capacità auto-update" sh -c "grep -q '\"auto-update\"' '$STATUS/status.json'"
+	assert "unità updater.path attiva e abilitata" hx_sh 'test "$(systemctl is-active monsterterminal-connector-updater.path)" = active && test "$(systemctl is-enabled monsterterminal-connector-updater.path)" = enabled'
+	assert "timer di ritorno non attivo, nessun .prev" hx_sh '! systemctl is-active --quiet monsterterminal-connector-rollback.timer && ! test -e /usr/local/bin/monsterterminal-connector.prev'
+	assert "timer di ritorno con OnActiveSec=$ROLLBACK_AFTER (override di banco)" hx grep -q "^OnActiveSec=$ROLLBACK_AFTER\$" /etc/systemd/system/monsterterminal-connector-rollback.timer
+	assert "cassetta update/ 0700 dell'utente del connettore" hx_sh 'test "$(stat -c "%a %U" /var/lib/monsterterminal/update)" = "700 monsterterminal"'
+
+	step "U1 — una sessione tmux aperta DAL CONNETTORE prima dell'aggiornamento (session.open dal backend finto): deve sopravvivere al riavvio (ADR 0438 D3 punto 5, KillMode=process)"
+	tmux_mt kill-server 2>/dev/null || true
+	send_cmd '{"action":"session.open","session":"prima-del-rilascio"}'
+	assert "sessione tmux «prima-del-rilascio» aperta dal connettore entro 15 s" wait_tmux prima-del-rilascio 15
+	assert "il server tmux sta nello stesso cgroup del servizio (figlio del connettore, non del banco)" tmux_cgroup_ok
+	msg "   cgroup del server tmux: $(tmux_server_cgroup | tr '\n' ' ') — del servizio: $(hx_sh 'cat "/proc/$(systemctl show -p MainPID --value monsterterminal-connector)/cgroup"' | tr '\n' ' ')"
+
+	step "U2 — il backend finto spinge update.available v$UPD1 (firmato con la chiave del banco)"
+	local pid_before
+	pid_before=$(hx systemctl show -p MainPID --value monsterterminal-connector)
+	push_manifest "$GHDIR/v$UPD1/update-manifest-linux-$ARCH.json" "$KEYS/updates.key"
+	assert "binario sostituito con l'asset v$UPD1 entro 90 s (download, updater root, rename)" wait_binary "$sha1" 90
+	assert ".prev presente = il binario di prima (v$BANCO_VERSION)" hx_sh "test \"\$(sha256sum /usr/local/bin/monsterterminal-connector.prev | cut -d' ' -f1)\" = $sha0"
+	assert "binario installato root 0755" hx_sh 'test "$(stat -c "%a %U" /usr/local/bin/monsterterminal-connector)" = "755 root"'
+	assert "cartella dell'updater /var/lib/monsterterminal-updater root 0700, FUORI dall'albero dell'utente (ADR 0438 A1)" hx_sh 'test "$(stat -c "%a %U" /var/lib/monsterterminal-updater)" = "700 root" && ! test -e /var/lib/monsterterminal/updater'
+	assert "il binario scaricato in update/ non è eseguibile" hx_sh 'f=/var/lib/monsterterminal/update/binary; ! test -e "$f" || test "$(stat -c %a "$f")" = 600'
+	assert "download dal prefisso vero delle release (github.com alias del banco)" sh -c "docker logs $REL_C 2>&1 | grep -q 'GET /monsterterminal/connector/releases/download/v$UPD1/'"
+	assert "nessun marcatore di collegamento subito dopo welcome (finestra di 30 s, punto 7 della revisione)" hx_sh '! test -e /var/lib/monsterterminal/update/connected-'"$UPD1"
+	assert "update.result ok v$UPD1 entro 90 s (dal connettore nuovo, dopo welcome E 30 s di connessione)" wait_result "$UPD1" ok "" 90
+	assert "«version» del binario = $UPD1" hx_sh "test \"\$(/usr/local/bin/monsterterminal-connector version)\" = $UPD1"
+	assert "servizio attivo con un MainPID nuovo" hx_sh "test \"\$(systemctl is-active monsterterminal-connector)\" = active && test \"\$(systemctl show -p MainPID --value monsterterminal-connector)\" != $pid_before"
+	assert "connector.restarted con reason update ($BANCO_VERSION → $UPD1) entro 30 s" wait_restart "$BANCO_VERSION" "$UPD1" update 30
+	assert ".prev rimosso dal timer di ritorno entro 90 s (marcatore connected-$UPD1 trovato)" wait_gone /usr/local/bin/monsterterminal-connector.prev 90
+	assert "pending.json, applied.json, apply.request assenti dopo il disarmo" mailbox_clean
+	assert "la sessione tmux creata prima è ancora viva" tmux_mt has-session -t prima-del-rilascio
+	assert "il servizio gira ancora come monsterterminal" hx_sh 'test "$(ps -o user= -p "$(systemctl show -p MainPID --value monsterterminal-connector)")" = monsterterminal'
+	assert "journal dell'updater: verificato e installato" hx_sh 'journalctl -u monsterterminal-connector-updater --no-pager | grep -q "aggiornamento verificato dall.updater"'
+	assert "journal del ritorno: disarmato" hx_sh 'journalctl -u monsterterminal-connector-rollback --no-pager | grep -q "disarmo"'
+	assert "nessun token (mti_/mth_) nei journal dell'updater e del ritorno" hx_sh '! journalctl -u monsterterminal-connector-updater -u monsterterminal-connector-rollback --no-pager | grep -q "mt[ih]_"'
+	msg "   update.result finora: $(results_json)"
+	verdict "update"
+}
+
+cmd_rollback() {
+	require_update_bench
+	local sha1 sha2
+	sha1=$(asset_sha "$UPD1")
+	sha2=$(asset_sha "$UPD2")
+	[ "$(installed_sha)" = "$sha1" ] || die "il binario installato non è v$UPD1: banco.sh update prima di rollback"
+	hx test -e /usr/local/bin/monsterterminal-connector.prev && die "un .prev è ancora presente: attendi il disarmo del giro precedente"
+
+	step "R1 — il backend finto spinge v$UPD2 (hello volutamente rotto): si installa, non si collega"
+	push_manifest "$GHDIR/v$UPD2/update-manifest-linux-$ARCH.json" "$KEYS/updates.key"
+	assert "binario sostituito con v$UPD2 entro 90 s" wait_binary "$sha2" 90
+	assert ".prev presente = v$UPD1" hx_sh "test \"\$(sha256sum /usr/local/bin/monsterterminal-connector.prev | cut -d' ' -f1)\" = $sha1"
+	assert "timer di ritorno armato" hx systemctl is-active --quiet monsterterminal-connector-rollback.timer
+	assert "journal: il binario di banco si rifiuta di collegarsi" hx_sh 'i=0; while [ $i -lt 20 ]; do journalctl -u monsterterminal-connector --no-pager | grep -q "hello volutamente rotto" && exit 0; i=$((i+1)); sleep 1; done; exit 1'
+
+	step "R2 — nessun welcome entro $ROLLBACK_AFTER: rollback-check (binario .prev, root) ripristina v$UPD1"
+	assert "binario tornato a v$UPD1 entro 90 s" wait_binary "$sha1" 90
+	assert ".prev consumato dal ripristino" wait_gone /usr/local/bin/monsterterminal-connector.prev 10
+	assert "update.result rolled-back v$UPD2 con reason no-welcome entro 60 s" wait_result "$UPD2" rolled-back no-welcome 60
+	assert "«version» del binario = $UPD1 e servizio attivo" hx_sh "test \"\$(/usr/local/bin/monsterterminal-connector version)\" = $UPD1 && test \"\$(systemctl is-active monsterterminal-connector)\" = active"
+	assert "connector.restarted con reason rollback ($UPD2 → $UPD1) entro 30 s" wait_restart "$UPD2" "$UPD1" rollback 30
+	assert "pending.json, applied.json, rolled-back.json assenti dopo il riporto" mailbox_clean
+	assert "journal del ritorno: ripristino la versione precedente" hx_sh 'journalctl -u monsterterminal-connector-rollback --no-pager | grep -q "ripristino la versione precedente"'
+	assert "la sessione tmux creata prima dell'aggiornamento è ancora viva" tmux_mt has-session -t prima-del-rilascio
+	msg "   update.result finora: $(results_json)"
+	verdict "rollback"
+}
+
+# Un manifest firmato per una versione fittizia: fallisce prima del download (o al download, 404).
+fake_manifest() {
+	# fake_manifest VERSIONE [SHA] [SECURITY] [URL-ASSET]: in $STATUS/manifests/<versione>.json
+	mkdir -p "$STATUS/manifests"
+	local sha=${2:-$(asset_sha "$UPD1")}
+	make_manifest "$1" "$(asset_name "$1")" "$sha" "${3:-}" >"$STATUS/manifests/$1.json"
+	if [ -n "${4:-}" ]; then
+		python3 - "$STATUS/manifests/$1.json" "$4" <<'PY'
+import json, sys
+p, url = sys.argv[1], sys.argv[2]
+d = json.load(open(p))
+d["url"] = url
+open(p, "w").write(json.dumps(d, separators=(",", ":"), sort_keys=True))
+PY
+	fi
+	echo "$STATUS/manifests/$1.json"
+}
+
+# Scrive nella cassetta update/ come l'utente del connettore: binario, manifest, firma (file locali
+# copiati nel container) e infine apply.request. È ciò che un utente compromesso potrebbe fare.
+user_plants() {
+	# user_plants VERSIONE MANIFEST-LOCALE FIRMA-LOCALE SORGENTE-BINARIO-NEL-CONTAINER [symlink]
+	local v=$1 mf=$2 sig=$3 src=$4 how=${5:-copy}
+	docker cp "$mf" "$HOST_C:/tmp/mt-manifest.json"
+	docker cp "$sig" "$HOST_C:/tmp/mt-manifest.sig"
+	hx chown monsterterminal /tmp/mt-manifest.json /tmp/mt-manifest.sig
+	if [ "$how" = symlink ]; then
+		hx runuser -u monsterterminal -- sh -c "rm -f /var/lib/monsterterminal/update/binary && ln -s '$src' /var/lib/monsterterminal/update/binary"
+	else
+		hx runuser -u monsterterminal -- sh -c "cp '$src' /var/lib/monsterterminal/update/binary"
+	fi
+	hx runuser -u monsterterminal -- sh -c "mv /tmp/mt-manifest.json /var/lib/monsterterminal/update/manifest.json && mv /tmp/mt-manifest.sig /var/lib/monsterterminal/update/manifest.sig && printf '%s\n' '$v' >/var/lib/monsterterminal/update/apply.request"
+}
+
+cmd_update_negative() {
+	require_update_bench
+	local sha1 sha3 before mf sigf
+	sha1=$(asset_sha "$UPD1")
+	sha3=$(asset_sha "$UPD3")
+	[ "$(installed_sha)" = "$sha1" ] || die "il binario installato non è v$UPD1: banco.sh update (e rollback) prima di update-negative"
+	hx test -e /usr/local/bin/monsterterminal-connector.prev && die "un .prev è ancora presente: attendi il disarmo del giro precedente"
+	before=$(snapshot_host)
+	local dl_before
+	dl_before=$(binary_downloads)
+
+	step "N1 — firma di un'altra chiave (perfetta, ma non mt-updates del banco) ⇒ failed bad-signature, nessun download"
+	push_manifest "$(fake_manifest 0.0.9-banco)" "$KEYS/impostore.key"
+	assert "update.result failed bad-signature" wait_result 0.0.9-banco failed bad-signature 30
+
+	step "N2 — firma con la chiave delle RICETTE (§1.17: le due chiavi non si scambiano) ⇒ failed bad-signature"
+	push_manifest "$(fake_manifest 0.0.8-banco)" "$KEYS/recipes.key"
+	assert "update.result failed bad-signature" wait_result 0.0.8-banco failed bad-signature 30
+
+	step "N3 — downgrade e stessa versione (mai un downgrade da manifest, ADR 0438 D3 punto 5) ⇒ failed not-newer"
+	push_manifest "$(fake_manifest "$BANCO_VERSION")" "$KEYS/updates.key"
+	assert "v$BANCO_VERSION < v$UPD1: update.result failed not-newer" wait_result "$BANCO_VERSION" failed not-newer 30
+	push_manifest "$GHDIR/v$UPD1/update-manifest-linux-$ARCH.json" "$KEYS/updates.key"
+	assert "v$UPD1 = in esecuzione: update.result failed not-newer" wait_result "$UPD1" failed not-newer 30
+	assert "nessun download finora" test "$(binary_downloads)" = "$dl_before"
+
+	step "N4 — URL fuori dal repository (releases.banco) ⇒ failed bad-url, nessun download"
+	push_manifest "$(fake_manifest 0.0.6-banco "" "" "https://releases.banco/releases/download/v$UPD1/$(asset_name "$UPD1")")" "$KEYS/updates.key"
+	assert "update.result failed bad-url" wait_result 0.0.6-banco failed bad-url 30
+	assert "nessun download" test "$(binary_downloads)" = "$dl_before"
+
+	step "N5 — sha256 diverso dal binario scaricato ⇒ failed sha256-mismatch (il download c'è, l'installazione no)"
+	push_manifest "$(fake_manifest 0.0.7-banco "$sha1" "" "$GH_PREFIX/v$UPD2/$(asset_name "$UPD2")")" "$KEYS/updates.key"
+	assert "update.result failed sha256-mismatch" wait_result 0.0.7-banco failed sha256-mismatch 60
+	assert "un download in più" test "$(binary_downloads)" -gt "$dl_before"
+	assert "nessun apply.request lasciato" hx_sh '! test -e /var/lib/monsterterminal/update/apply.request'
+
+	step "N6 — interruttore del backend spento (config.update autoUpdate=false, ADR 0438 D6) ⇒ skipped tenant-switch"
+	backend_switch false
+	sleep 1
+	push_manifest "$(fake_manifest 0.0.5-banco)" "$KEYS/updates.key"
+	assert "update.result skipped tenant-switch" wait_result 0.0.5-banco skipped tenant-switch 30
+	dl_before=$(binary_downloads)
+
+	step "N7 — auto_update=no nel file dell'host vince su tutto (D6 «assoluto»), anche sull'updater: un pacchetto IN REGOLA (v$UPD3 firmato, sha giusto) messo in update/ con apply.request è rifiutato da root con host-config; e un manifest di sicurezza spinto dal backend è skipped host-config senza download"
+	hx sed -i 's/^auto_update=yes$/auto_update=no/' /etc/monsterterminal/connector.conf
+	hx systemctl restart monsterterminal-connector
+	assert "il connettore riparte e dichiara autoUpdateEnabled=false" sh -c "i=0; while [ \$i -lt 30 ]; do grep -q '\"autoUpdateEnabled\": false' '$STATUS/status.json' && exit 0; i=\$((i+1)); sleep 1; done; exit 1"
+	before=$(snapshot_host)
+	docker cp "$DIST/$(asset_name "$UPD3")" "$HOST_C:/tmp/mt-asset3"
+	hx chmod 0644 /tmp/mt-asset3
+	sigf=$STATUS/manifests/upd3.sig
+	openssl pkeyutl -sign -inkey "$KEYS/updates.key" -rawin -in "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" -out "$sigf"
+	user_plants "$UPD3" "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" "$sigf" /tmp/mt-asset3
+	assert "apply.rejected con reason host-config entro 30 s (l'updater legge il file dell'host da sé)" hx_sh 'i=0; while [ $i -lt 30 ]; do grep -q "host-config" /var/lib/monsterterminal/update/apply.rejected 2>/dev/null && exit 0; i=$((i+1)); sleep 1; done; exit 1'
+	assert "update.result skipped host-config v$UPD3 riportato dal connettore entro 60 s" wait_result "$UPD3" skipped host-config 60
+	assert "binario, conf, unit e token intatti; nessun .prev" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev"
+	dl_before=$(binary_downloads)
+	push_manifest "$(fake_manifest 0.0.4-banco "" '"security":true,')" "$KEYS/updates.key"
+	assert "manifest di sicurezza spinto: update.result skipped host-config, nessun download" wait_result 0.0.4-banco skipped host-config 30
+	assert "nessun download" test "$(binary_downloads)" = "$dl_before"
+	hx sed -i 's/^auto_update=no$/auto_update=yes/' /etc/monsterterminal/connector.conf
+	hx systemctl restart monsterterminal-connector
+	assert "il connettore riparte con auto_update=yes" sh -c "i=0; while [ \$i -lt 30 ]; do grep -q '\"autoUpdateEnabled\": true' '$STATUS/status.json' && exit 0; i=\$((i+1)); sleep 1; done; exit 1"
+
+	step "N8 — manifest con security:true ignora l'interruttore del backend (ancora spento): v$UPD3 si installa davvero"
+	push_manifest "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" "$KEYS/updates.key"
+	assert "binario sostituito con v$UPD3 entro 90 s" wait_binary "$sha3" 90
+	assert "update.result ok v$UPD3 entro 90 s (dopo la finestra di collegamento)" wait_result "$UPD3" ok "" 90
+	assert ".prev rimosso entro 60 s" wait_gone /usr/local/bin/monsterterminal-connector.prev 60
+	backend_switch assente
+
+	step "N9 — l'utente del connettore mette in update/ un binario NON firmato (firma di zeri) con un apply.request falso ⇒ l'updater scrive apply.rejected e NON installa (decisione BOSS 2026-11-17)"
+	before=$(snapshot_host)
+	mf=$(fake_manifest 0.1.0-banco "$(hx sha256sum /bin/true | cut -d' ' -f1)")
+	sigf=$STATUS/manifests/zeri.sig
+	head -c 64 /dev/zero >"$sigf"
+	user_plants 0.1.0-banco "$mf" "$sigf" /bin/true
+	assert "apply.rejected con reason bad-signature entro 30 s" hx_sh 'i=0; while [ $i -lt 30 ]; do grep -q "bad-signature" /var/lib/monsterterminal/update/apply.rejected 2>/dev/null && exit 0; i=$((i+1)); sleep 1; done; exit 1'
+	assert "update.result failed bad-signature v0.1.0-banco riportato dal connettore entro 60 s" wait_result 0.1.0-banco failed bad-signature 60
+	assert "binario, conf, unit e token intatti; nessun .prev" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev"
+	assert "journal dell'updater: rifiutato" hx_sh 'journalctl -u monsterterminal-connector-updater --no-pager | grep -q "aggiornamento rifiutato dall.updater"'
+
+	step "N9b — lo stesso, firmato con la chiave delle ricette ⇒ apply.rejected bad-signature"
+	mf=$(fake_manifest 0.1.1-banco "$(hx sha256sum /bin/true | cut -d' ' -f1)")
+	sigf=$STATUS/manifests/ricette.sig
+	openssl pkeyutl -sign -inkey "$KEYS/recipes.key" -rawin -in "$mf" -out "$sigf"
+	user_plants 0.1.1-banco "$mf" "$sigf" /bin/true
+	assert "update.result failed bad-signature v0.1.1-banco entro 60 s" wait_result 0.1.1-banco failed bad-signature 60
+	assert "macchina intatta" test "$(snapshot_host)" = "$before"
+
+	step "N10 — symlink in update/binary verso il binario di root, manifest firmato con lo sha di quel file ⇒ rifiutato senza seguirlo"
+	mf=$(fake_manifest 0.1.2-banco "$(installed_sha)")
+	sigf=$STATUS/manifests/symlink.sig
+	openssl pkeyutl -sign -inkey "$KEYS/updates.key" -rawin -in "$mf" -out "$sigf"
+	user_plants 0.1.2-banco "$mf" "$sigf" /usr/local/bin/monsterterminal-connector symlink
+	assert "update.result failed download-failed v0.1.2-banco entro 60 s (symlink non seguito)" wait_result 0.1.2-banco failed download-failed 60
+	assert "macchina intatta, nessun .prev, nessuna copia nella cartella dell'updater" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev && ! docker exec $HOST_C test -e /var/lib/monsterterminal-updater/binary"
+	assert "cassetta pulita e nessuna richiesta in attesa" mailbox_clean
+	assert "servizio attivo, «version» = $UPD3" hx_sh "test \"\$(systemctl is-active monsterterminal-connector)\" = active && test \"\$(/usr/local/bin/monsterterminal-connector version)\" = $UPD3"
+	msg "   update.result finora: $(results_json)"
+	verdict "update-negative"
+}
+
 # ---------- status / down ----------
 
 cmd_status() {
@@ -552,10 +974,10 @@ cmd_down() {
 	fi
 	if [ -f "$MARKER" ]; then
 		# solo le cartelle che «up» ha creato, sotto una BANCO_HOME marcata dal banco stesso
-		rm -rf "${KEYS:?}" "${CERTS:?}" "${DIST:?}" "${WWW:?}" "${STATUS:?}" "${MARKER:?}"
+		rm -rf "${KEYS:?}" "${CERTS:?}" "${DIST:?}" "${WWW:?}" "${STATUS:?}" "${SRCCOPY:?}" "${MARKER:?}"
 		rmdir "$BANCO_HOME" 2>/dev/null || true
 	fi
-	msg "fatto: restano la cache go in $GO_CACHE e, se presente, $BANCO_HOME/src"
+	msg "fatto: resta la cache go in $GO_CACHE"
 	if docker ps -a --format '{{.Names}}' | grep -q '^mt-banco-'; then
 		die "container mt-banco-* ancora presenti"
 	fi
@@ -567,6 +989,9 @@ up) cmd_up ;;
 install) cmd_install ;;
 negative) cmd_negative ;;
 spazi) cmd_spazi ;;
+update) cmd_update ;;
+rollback) cmd_rollback ;;
+update-negative) cmd_update_negative ;;
 uninstall) cmd_uninstall ;;
 status) cmd_status ;;
 all)
@@ -578,13 +1003,19 @@ all)
 	fails=0
 	cmd_spazi
 	fails=0
+	cmd_update
+	fails=0
+	cmd_rollback
+	fails=0
+	cmd_update_negative
+	fails=0
 	cmd_uninstall
 	msg ""
 	msg "== all: verde. Il banco è ancora in piedi: banco.sh down per smontarlo"
 	;;
 down) cmd_down "${2:-}" ;;
 *)
-	sed -n '2,20p' "$0" >&2
+	sed -n '2,28p' "$0" >&2
 	exit 2
 	;;
 esac

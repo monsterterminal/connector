@@ -4,17 +4,18 @@ Il connettore di MonsterTerminal: un piccolo programma installato sull'host del 
 connessione in uscita verso MonsterTerminal, registra l'host e lascia lavorare tmux e gli agenti AI
 anche quando il collegamento cade.
 
-> Stato: **v0.6.0**, schemi del protocollo **0.9.0**, in uso con il gateway di MonsterTerminal (ADR
+> Stato: **v0.7.0**, schemi del protocollo **0.10.0**, in uso con il gateway di MonsterTerminal (ADR
 > 0409). Cosa fa oggi: registrazione e sostituzione dell'host; collegamento in uscita con heartbeat,
 > ricollegamento, revoca e kill-switch; giornale degli eventi con conferme del backend; terminale sulle
 > sessioni tmux con i sette comandi di sessione (ridisegno, interruzione, appunti, chiusura, rinomina,
 > zoom, cattura) e l'adattamento alla pane; **DragMeHere**, cioè i file trascinati nel browser che arrivano
 > in `~/dragmehere/` sull'host; stati degli agenti AI (Claude Code con gli hook, livello generico con
 > timer d'inattività); richieste di permesso e domande di Claude Code con risposta dalla card. Rilasci
-> firmati con Ed25519 e installazione verificata da `install.sh`.
+> firmati con Ed25519, installazione verificata da `install.sh` e **aggiornamento automatico** firmato,
+> con updater root che riverifica e ritorno alla versione precedente (ADR 0438, vedi
+> [Aggiornare](#aggiornare)).
 >
-> Cosa non c'è ancora: l'aggiornamento automatico (oggi si aggiorna rilanciando `install.sh`, vedi
-> [Aggiornare](#aggiornare)), il catalogo delle ricette di installazione degli agenti e gli adattatori per
+> Cosa non c'è ancora: il catalogo delle ricette di installazione degli agenti e gli adattatori per
 > agenti diversi da Claude Code (Codex CLI è il prossimo).
 
 ## Uso
@@ -32,6 +33,9 @@ monsterterminal-connector run
 # e aggiunge i propri hook nelle impostazioni dell'utente (~/.claude/settings.json); -yes senza terminale
 monsterterminal-connector hooks install
 monsterterminal-connector hooks remove
+# solo dalle unità systemd, come root (ADR 0438): mai a mano
+monsterterminal-connector apply-update -state-dir /var/lib/monsterterminal
+monsterterminal-connector.prev rollback-check -state-dir /var/lib/monsterterminal
 ```
 
 Opzioni comuni: `-server` (default `https://connect.monsterterminal.com`), `-token-file` (default
@@ -133,10 +137,21 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   inattività (soglia della configurazione dell'host, 5 minuti di default), letto dall'attività di tmux.
 - **Rifiuti transitori**: `429 RATE_LIMITED` e `503 UNAVAILABLE` all'upgrade non si ritentano prima del
   `Retry-After`; la chiusura `1011` (errore interno del backend) si ritenta col backoff normale: un tentativo ogni 3-5 s per i primi 2 minuti, poi da 8 a 60 s.
+- **Aggiornamento automatico** (schemi 0.10.0, ADR 0438): `update.check` dopo ogni `welcome` e poi ogni
+  6 ore con scarto; `update.available` (in risposta, o spinto dal backend) si verifica — firma Ed25519
+  del manifest canonico con la chiave incorporata, `os`/`arch`, `minProtocol`, versione strettamente
+  maggiore, URL sotto le release del repository — poi si scarica (64 MiB, SHA-256) in
+  `/var/lib/monsterterminal/update/` e si lascia `apply.request` all'unità root `apply-update`, che
+  copia nella sua cartella `/var/lib/monsterterminal-updater` (fuori dall'albero dell'utente, tutto dai
+  descrittori di cartella, senza seguire symlink), **riverifica da sé** (anche `auto_update` del file
+  dell'host) e installa con `.prev` e `rename` atomico; il timer di ritorno (5 minuti) ripristina
+  `.prev` se la versione nuova non resta collegata almeno 30 secondi. Esiti in `update.result`:
+  `ok`, `failed` con motivo, `skipped` (`host-config`, `tenant-switch`), `rolled-back` (`no-welcome`).
+  `hello.capabilities` dichiara `auto-update`. Dettagli in [`SECURITY.md`](SECURITY.md).
 
 ## Riferimenti
 
-- Schemi del protocollo: [`schemas/0.9.0/`](schemas/0.9.0/README.md) (fonte unica del contratto; le
+- Schemi del protocollo: [`schemas/0.10.0/`](schemas/0.10.0/README.md) (fonte unica del contratto; le
   versioni precedenti restano nelle loro cartelle).
 - **Documentazione interna.** Il codice e i commenti citano per numero le decisioni architetturali
   (ADR 0409 il connettore, ADR 0410 gli agenti AI e il catalogo) e per sezione (`§1.x`, `§2.x`) la
@@ -168,14 +183,13 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/hostconf/` | lettura di `connector.conf` (scelte del cliente) |
 | `internal/signing/` | verifica Ed25519 con le chiavi pubbliche incluse nel binario |
 | `internal/catalog/` | esecuzione delle ricette firmate (prevista, non ancora presente) |
-| `internal/update/` | aggiornamento firmato e ritorno alla versione precedente (previsto, non ancora presente) |
+| `internal/update/` | aggiornamento firmato: verifica, download, cassetta delle lettere, updater root e ritorno (ADR 0438) |
 | `internal/fakeserver/` | backend finto che parla il protocollo come il gateway vero, solo per i test |
 | `schemas/<versione>/` | JSON Schema del protocollo, fonte unica del contratto |
 | `packaging/` | script di installazione (`install.sh`) e il suo banco di prova |
 | `scripts/` | firma e pubblicazione dei rilasci |
 
-Le cartelle si creano quando arriva il codice che ci va dentro: oggi mancano solo `internal/catalog` e
-`internal/update`.
+Le cartelle si creano quando arriva il codice che ci va dentro: oggi manca solo `internal/catalog`.
 
 ## Test
 
@@ -226,13 +240,19 @@ prova e lo dichiara a voce alta.
 
 ### Aggiornare
 
-L'aggiornamento automatico non c'è ancora. Per passare all'ultima versione si rilancia il comando di
-installazione con un token **nuovo** preso dalla UI dello stesso spazio di lavoro, **senza** `--replace`.
-Lo script verifica la firma del nuovo rilascio, poi chiede al servizio, senza consumare il token, se il
-server registrato qui appartiene a quello spazio. Se sì, non registra di nuovo, sostituisce il binario e
-riavvia il servizio, e le sessioni tmux restano vive. Un token già usato non basta: senza un token
-valido lo script non sa per quale spazio sta lavorando. Che serva un token anche solo per aggiornare è
-un limite noto, da togliere con l'aggiornamento automatico.
+Dalla v0.7.0 il connettore **si aggiorna da solo** (ADR 0438): chiede al backend, scarica il rilascio
+firmato, e un'unità systemd root (`monsterterminal-connector-updater`) lo riverifica e lo installa,
+conservando la versione precedente in `monsterterminal-connector.prev`; se la nuova non si collega
+entro 5 minuti, il timer `monsterterminal-connector-rollback` la rimette al suo posto. Le sessioni tmux
+non si toccano. Il cliente può spegnere gli aggiornamenti nella pagina Server di MonsterTerminal (un
+rilascio di sicurezza li ignora) oppure sull'host con `auto_update=no` in `connector.conf` (assoluto,
+anche per la sicurezza). Gli esiti compaiono nella pagina Server.
+
+**Una volta sola**, per gli host installati con la v0.6.1 o precedenti (che non hanno l'updater), si
+rilancia il comando di installazione con un token **nuovo** preso dalla UI dello stesso spazio di lavoro,
+**senza** `--replace`: lo script verifica la firma del nuovo rilascio, chiede al servizio, senza
+consumare il token, se il server registrato qui appartiene a quello spazio, e se sì non registra di
+nuovo, sostituisce il binario, scrive le unità nuove e riavvia il servizio. Da lì in poi non serve più.
 
 Un server appartiene a un solo spazio di lavoro e ha un solo connettore (ADR 0409 A2). Se il token è
 di un altro spazio, lo script si ferma senza toccare nulla: per spostare il server, revocalo dallo

@@ -80,7 +80,7 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/backend-to-connector/welcome.json", Welcome{}},
 		{"messages/backend-to-connector/config.update.json", ConfigUpdate{}},
 		{"messages/connector-to-backend/error.json", nil}, // corpo = errorBody, verificato sotto
-		{"objects/host-config.json", HostConfig{}},
+		{"objects/host-config.json", HostConfig{AutoUpdate: new(bool)}},
 		{"messages/connector-to-backend/event.json", Event{Seq: 1, Kind: "x", At: "x", Data: json.RawMessage(`{}`)}},
 		{"messages/backend-to-connector/events.ack.json", EventsAck{}},
 		{"events/connector.restarted.json", ConnectorRestarted{}},
@@ -113,6 +113,12 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/connector-to-backend/file.put.result.json", FilePutResult{Path: "x", Size: 1, SHA256: "x"}},
 		{"messages/backend-to-connector/file.cancel.json", TransferBody{}},
 		{"messages/connector-to-backend/file.cancel.result.json", TransferBody{}},
+		// Schemi 0.10.0 (ADR 0438): l'aggiornamento automatico.
+		{"messages/backend-to-connector/update.available.json", UpdateAvailable{}},
+		{"messages/connector-to-backend/update.result.json", UpdateResult{Reason: "x"}},
+		{"messages/connector-to-backend/update.check.json", struct{}{}},
+		{"messages/backend-to-connector/update.none.json", struct{}{}},
+		{"objects/update-manifest.json", UpdateManifest{Security: new(bool)}},
 	}
 	for _, c := range cases {
 		if c.value == nil {
@@ -208,7 +214,18 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if int(put["size"].(map[string]any)["maximum"].(float64)) != MaxFileBytes || int(put["data"].(map[string]any)["maxLength"].(float64)) != MaxChunkBase64 {
 		t.Error("tetti di file.put: schema e Go divergono")
 	}
-	if Version != 1 || SchemaVersion != "0.9.0" {
+	// update.result: esiti nell'ordine dello schema e tetto del motivo (ADR 0438 D3, D7).
+	ur := readSchema(t, "messages/connector-to-backend/update.result.json")["properties"].(map[string]any)["body"].(map[string]any)["properties"].(map[string]any)
+	if fmt.Sprint(ur["outcome"].(map[string]any)["enum"]) != fmt.Sprint(UpdateOutcomes) {
+		t.Errorf("esiti di update.result: schema %v, Go %v", ur["outcome"], UpdateOutcomes)
+	}
+	if int(ur["reason"].(map[string]any)["maxLength"].(float64)) != MaxUpdateReasonLength {
+		t.Errorf("tetto di update.result.reason: schema %v, Go %d", ur["reason"], MaxUpdateReasonLength)
+	}
+	if defs["signature"].(map[string]any)["pattern"].(string) != signatureRE.String() {
+		t.Errorf("forma della firma: schema %v, Go %s", defs["signature"], signatureRE)
+	}
+	if Version != 1 || SchemaVersion != "0.10.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }

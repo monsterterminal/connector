@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.7.0 — 2026-11-17
+
+Settimo rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
+schemi 0.10.0 (la v0.6.1 implementava la 0.9.0) e lo dichiara con `X-MonsterTerminal-Schema`. Solo
+aggiunte: un backend che non conosce `update.check` non risponde e il connettore resta com'era.
+
+- **Aggiornamento automatico del connettore** (ADR 0438; spec §1.10 riscritta). Il connettore invia
+  `update.check` subito dopo `welcome` e poi ogni 6 ore con scarto casuale di ±30 minuti; il backend
+  risponde `update.available` oppure `update.none`, e spinge `update.available` da sé quando il super
+  avanza lo stadio di un rilascio. Il connettore verifica la firma Ed25519 del manifest canonico con la
+  chiave `mt-updates-2026` incorporata, sistema e architettura, `minProtocol`, che la versione sia
+  strettamente maggiore della propria (semver 2.0, pre-release comprese) e che l'URL stia sotto
+  `https://github.com/monsterterminal/connector/releases/download/`; scarica in
+  `/var/lib/monsterterminal/update/` con tetto di 64 MiB e timeout, verifica lo SHA-256 e lascia
+  binario, manifest, firma e `apply.request`. Ogni rifiuto è `update.result failed` con il motivo
+  (`bad-signature`, `not-newer`, `wrong-platform`, `protocol-too-old`, `bad-url`, `download-failed`,
+  `sha256-mismatch`, `too-large`). Mai un downgrade da manifest.
+- **Updater root che non si fida** (`apply-update`, unità `monsterterminal-connector-updater.path` +
+  `.service`): copia binario, manifest e firma in `/var/lib/monsterterminal-updater/` (root `0700`,
+  **fuori** dall'albero dell'utente, antenati controllati; ADR 0438 A1) lavorando solo dai descrittori
+  delle cartelle (`os.Root`), senza seguire symlink, senza bloccarsi su una FIFO e per contenuto;
+  riverifica da sé firma, SHA-256 (anche della copia finale scritta in `.new`), piattaforma,
+  `minProtocol`, versione e `auto_update` del file dell'host; conserva `monsterterminal-connector.prev`,
+  installa con `rename` atomico, arma il timer di ritorno e riavvia il servizio. Un binario non firmato
+  o firmato con un'altra chiave messo in `update/` dall'utente del connettore non si installa mai
+  (`apply.rejected`); con `auto_update = no` nel file dell'host non si installa niente, nemmeno un
+  pacchetto in regola (`skipped host-config`). Vedi `SECURITY.md`.
+- **Ritorno alla versione precedente** (`rollback-check`, `monsterterminal-connector-rollback.timer`,
+  5 minuti): se la versione nuova non scrive il marcatore di collegamento dopo `welcome`, il timer
+  esegue il binario `.prev`, che si rimette al suo posto, scrive `rolled-back.json` e riavvia; il
+  connettore riporta `update.result rolled-back` con `no-welcome`. La versione nuova scrive il marcatore
+  e riporta `update.result ok` solo dopo `welcome` e 30 secondi di connessione mantenuta. Gli esiti si
+  tolgono dalla cassetta solo dopo la consegna al backend. `connector.restarted` porta `update` o
+  `rollback` come prima.
+- **Interruttori** (ADR 0438 D6): si aggiorna solo se `auto_update` nel file dell'host E
+  `autoUpdate` del backend (`welcome.config`, `config.update`, assente = acceso) sono accesi;
+  altrimenti `update.result skipped` con `host-config` o `tenant-switch`, senza scaricare. Un manifest
+  con `"security":true` ignora l'interruttore del backend, mai il file locale.
+- `hello.capabilities` dichiara `auto-update`. Le sessioni tmux non si toccano (`KillMode=process`):
+  il banco lo prova.
+- `install.sh` scrive le tre unità in più (riscrivendole se esistono, con `TimeoutStartSec`,
+  `-service-user` dall'`User=` del servizio e `StartLimitBurst=20` sull'updater), crea
+  `update/` e `/var/lib/monsterterminal-updater`; `--uninstall` le toglie insieme a `.prev`.
+  `MT_ROLLBACK_AFTER` accorcia il timer **solo nei banchi** (e solo con `MT_BANCO=1`).
+- Rilasci: `packaging/release.json` (`{"security": false}`) decide `"security":true` nel manifest
+  firmato (solo quando è vero; chiavi in ordine alfabetico, senza spazi); `firma-rilascio` stampa
+  «MANIFEST DI SICUREZZA» prima di chiedere la passphrase.
+- Banco: `banco.sh update`, `rollback`, `update-negative` (dieci negativi, fra cui il binario non
+  firmato messo a mano e il symlink in `update/`), in CI.
+- **Passo manuale, una volta**: gli host a v0.6.1 o precedenti non hanno l'updater. Si rilancia il
+  comando di installazione con un token nuovo dello stesso spazio (aggiorna senza registrare di
+  nuovo); da lì in poi è tutto automatico.
+
+## Schemi 0.10.0 — 2026-11-17
+
+- Solo aggiunte rispetto a 0.9.0 (protocollo sempre 1), ADR 0438: `update.check` (connettore →
+  backend, corpo vuoto) e `update.none` (backend → connettore, `re` obbligatorio); `security` opzionale
+  nel manifest firmato (`objects/update-manifest.json`); `autoUpdate` opzionale in `host-config`.
+
 ## v0.6.1 — 2026-11-04
 
 Sesto rilascio firmato (chiave `mt-updates-2026`). Protocollo e schemi invariati.

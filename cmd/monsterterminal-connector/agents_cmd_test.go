@@ -132,7 +132,7 @@ func TestHookPortaLoStatoFinoAlBackend(t *testing.T) {
 	id := hostIDFromStdout(t, h.stdout.String())
 	done, stop := h.start(t)
 	defer func() { stop(); waitExit(t, done) }()
-	if hl := waitHello(t, h.s); len(hl.Capabilities) != 1 || hl.Capabilities[0] != "hooks" {
+	if hl := waitHello(t, h.s); len(hl.Capabilities) != 2 || hl.Capabilities[0] != "hooks" || hl.Capabilities[1] != "auto-update" {
 		t.Fatalf("capabilities in hello: %v", hl.Capabilities)
 	}
 	eventually(t, "socket degli hook", func() bool { _, err := os.Stat(hookSocket(h.stateDir)); return err == nil })

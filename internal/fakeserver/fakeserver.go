@@ -8,7 +8,10 @@
 // anche alla registrazione; autenticazione dell'upgrade (§1.4), hello/welcome, ping (§1.2), una
 // connessione per host (4409), revoca (4401), kill-switch (4403); giornale col segnalibro che fa
 // fede (§1.12: ACK_AHEAD, SEQ_GAP, TRUNCATION_INCOHERENT, troncamento coerente); 50 messaggi al
-// secondo per host (§1.17, 4429); rifiuti dell'upgrade 429 con Retry-After e 503; chiusura 1011.
+// secondo per host (§1.17, 4429); rifiuti dell'upgrade 429 con Retry-After e 503; chiusura 1011;
+// aggiornamento automatico (schemi 0.10.0, ADR 0438 D4, D6): update.check → update.available (se c'è
+// un'offerta) o update.none, update.available spinto, autoUpdate in welcome e config.update,
+// update.result registrati per host.
 // Non va mai importato dal codice di produzione.
 package fakeserver
 
@@ -59,6 +62,15 @@ type host struct {
 	closed    []protocol.SessionClosed
 	contexts  []protocol.RequestContext
 	reqClosed []protocol.RequestClosed
+	// aggiornamento automatico (ADR 0438)
+	updateResults []protocol.UpdateResult
+	updateChecks  int
+}
+
+// Offer è un update.available pronto da mandare: il manifest e la sua firma in base64.
+type Offer struct {
+	Manifest  protocol.UpdateManifest
+	Signature string
 }
 
 // Rejection è un rifiuto dell'upgrade preparato da un test.
@@ -113,6 +125,10 @@ type Server struct {
 	silent          bool
 	rejections      []Rejection
 	closeAfterEvent map[int64]websocket.StatusCode
+	// aggiornamento automatico (ADR 0438)
+	offer       *Offer // risposta a update.check; nil = update.none
+	autoUpdate  *bool  // autoUpdate di host-config in welcome e config.update; nil = assente
+	updateNones int
 }
 
 // New avvia il server su TLS con certificato autofirmato (httptest): è la forma dei test.
@@ -696,7 +712,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	welcome := protocol.Welcome{
 		HostID: h.id, Protocol: protocol.Version, ServerTime: protocol.Timestamp(time.Now()),
-		Config: protocol.HostConfig{DefaultIdleThresholdSeconds: 300, SessionIdleThresholds: map[string]int{}, MaxChannels: s.maxChannels()},
+		Config: s.hostConfig(),
 	}
 	send := func(typ, re string, body any) error {
 		frame, _, _ := protocol.Encode(typ, re, body, time.Now())
@@ -765,6 +781,33 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		if env.Type == protocol.TypeUpdateCheck {
+			// ADR 0438 D4: con un'offerta risponde update.available, altrimenti update.none, con re.
+			s.mu.Lock()
+			h.updateChecks++
+			offer := s.offer
+			if offer == nil {
+				s.updateNones++
+			}
+			s.mu.Unlock()
+			if offer != nil {
+				_ = send(protocol.TypeUpdateAvailable, env.ID, protocol.UpdateAvailable{Version: offer.Manifest.Version, Manifest: offer.Manifest, Signature: offer.Signature})
+			} else {
+				_ = send(protocol.TypeUpdateNone, env.ID, struct{}{})
+			}
+			s.notify("update.check")
+			continue
+		}
+		if env.Type == protocol.TypeUpdateResult {
+			var r protocol.UpdateResult
+			if json.Unmarshal(env.Body, &r) == nil {
+				s.mu.Lock()
+				h.updateResults = append(h.updateResults, r)
+				s.mu.Unlock()
+				s.notify("update.result")
+			}
+			continue
+		}
 		if env.Type != protocol.TypeEvent {
 			s.mu.Lock()
 			if env.Re != "" {
@@ -815,6 +858,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if upTo >= 1 {
 			_ = send(protocol.TypeEventsAck, env.ID, protocol.EventsAck{UpToSeq: upTo})
 		}
+		s.notify("event")
 	}
 }
 
@@ -823,6 +867,144 @@ func (s *Server) maxChannels() int {
 		return s.MaxChannels
 	}
 	return 12
+}
+
+// hostConfig è la configurazione dell'host mandata in welcome e config.update (§1.11).
+func (s *Server) hostConfig() protocol.HostConfig {
+	s.mu.Lock()
+	au := s.autoUpdate
+	s.mu.Unlock()
+	return protocol.HostConfig{DefaultIdleThresholdSeconds: 300, SessionIdleThresholds: map[string]int{}, MaxChannels: s.maxChannels(), AutoUpdate: au}
+}
+
+// SetAutoUpdate imposta l'interruttore del backend (ADR 0438 D6) per i welcome futuri e lo manda
+// subito con config.update agli host collegati; nil = campo assente (acceso).
+func (s *Server) SetAutoUpdate(v *bool) {
+	s.mu.Lock()
+	s.autoUpdate = v
+	var conns []*websocket.Conn
+	for _, h := range s.hosts {
+		if h.conn != nil {
+			conns = append(conns, h.conn)
+		}
+	}
+	s.mu.Unlock()
+	cfg := protocol.ConfigUpdate{Config: s.hostConfig()}
+	for _, c := range conns {
+		frame, _, _ := protocol.Encode(protocol.TypeConfigUpdate, "", cfg, time.Now())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = c.Write(ctx, websocket.MessageText, frame)
+		cancel()
+	}
+}
+
+// SetOffer imposta la risposta ai prossimi update.check: update.available con questo manifest; nil
+// torna a update.none.
+func (s *Server) SetOffer(o *Offer) {
+	s.mu.Lock()
+	s.offer = o
+	s.mu.Unlock()
+}
+
+// PushUpdate manda update.available senza richiesta a tutti gli host collegati (ADR 0438 D4: il
+// super avanza lo stadio); restituisce quanti lo hanno ricevuto.
+func (s *Server) PushUpdate(o Offer) int {
+	s.mu.Lock()
+	var conns []*websocket.Conn
+	for _, h := range s.hosts {
+		if h.conn != nil {
+			conns = append(conns, h.conn)
+		}
+	}
+	s.mu.Unlock()
+	n := 0
+	body := protocol.UpdateAvailable{Version: o.Manifest.Version, Manifest: o.Manifest, Signature: o.Signature}
+	for _, c := range conns {
+		frame, _, _ := protocol.Encode(protocol.TypeUpdateAvailable, "", body, time.Now())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if c.Write(ctx, websocket.MessageText, frame) == nil {
+			n++
+		}
+		cancel()
+	}
+	return n
+}
+
+// OpenSessionAll apre (o crea) una sessione tmux su tutti gli host collegati con session.open
+// (canale 1, interattiva, 80x24): il banco se ne serve per provare che una sessione aperta DAL
+// connettore sopravvive al riavvio dell'aggiornamento (ADR 0438 D3 punto 5).
+func (s *Server) OpenSessionAll(name string) int {
+	s.mu.Lock()
+	var ids []string
+	for _, h := range s.hosts {
+		if h.conn != nil {
+			ids = append(ids, h.id)
+		}
+	}
+	s.mu.Unlock()
+	n := 0
+	for _, id := range ids {
+		if _, err := s.SendControl(id, protocol.TypeSessionOpen, protocol.SessionOpen{Channel: 1, Session: name, Create: true, Mode: protocol.ModeInteract, Cols: 80, Rows: 24}); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// UpdateResults sono gli update.result ricevuti dall'host, in ordine.
+func (s *Server) UpdateResults(hostID string) []protocol.UpdateResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h := s.byID(hostID); h != nil {
+		return append([]protocol.UpdateResult(nil), h.updateResults...)
+	}
+	return nil
+}
+
+// AllUpdateResults sono gli update.result di tutti gli host (il banco ne ha uno, ma sostituito).
+func (s *Server) AllUpdateResults() []protocol.UpdateResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.UpdateResult
+	for _, h := range s.hosts {
+		out = append(out, h.updateResults...)
+	}
+	return out
+}
+
+// UpdateChecks conta gli update.check ricevuti da tutti gli host; UpdateNones gli update.none mandati.
+func (s *Server) UpdateChecks() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, h := range s.hosts {
+		n += h.updateChecks
+	}
+	return n
+}
+
+func (s *Server) UpdateNones() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateNones
+}
+
+// Restarts sono i connector.restarted ricevuti da tutti gli host, in ordine di arrivo per host.
+func (s *Server) Restarts() []protocol.ConnectorRestarted {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.ConnectorRestarted
+	for _, h := range s.hosts {
+		for _, ev := range h.events {
+			if ev.Kind == protocol.KindConnectorRestarted {
+				var d protocol.ConnectorRestarted
+				if json.Unmarshal(ev.Data, &d) == nil {
+					out = append(out, d)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (s *Server) conn(hostID string) *websocket.Conn {

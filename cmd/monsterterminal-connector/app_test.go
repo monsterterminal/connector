@@ -432,7 +432,7 @@ func TestConfrontoSemver(t *testing.T) {
 		{"1.0.0-alpha.2", "1.0.0-alpha.10", -1}, {"1.0.0-1", "1.0.0-alpha", -1},
 		{"1.0.0+build", "1.0.0", 0},
 	} {
-		if got := compareSemver(c.a, c.b); got != c.want {
+		if got := protocol.CompareSemver(c.a, c.b); got != c.want {
 			t.Errorf("compare(%s, %s) = %d, atteso %d", c.a, c.b, got, c.want)
 		}
 	}
@@ -551,7 +551,7 @@ func TestVersioneDiSviluppoAccettataDalBackend(t *testing.T) {
 	if backendCompareSemver(devVersion, minBackendVersion) < 0 {
 		t.Fatalf("%s è sotto la minima del backend %s: 426 CONNECTOR_TOO_OLD", devVersion, minBackendVersion)
 	}
-	if compareSemver(devVersion, minBackendVersion) < 0 {
+	if protocol.CompareSemver(devVersion, minBackendVersion) < 0 {
 		t.Fatalf("%s precede %s anche in semver", devVersion, minBackendVersion)
 	}
 	// La controprova del motivo: la forma di prima è rifiutata.

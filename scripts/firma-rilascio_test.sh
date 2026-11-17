@@ -62,6 +62,11 @@ corsa() {
 	[ -e "$st/draft-flag" ] || echo true >"$st/draft-flag"
 	[ -z "${DRAFT:-}" ] || echo "$DRAFT" >"$st/draft-flag"
 	[ -z "${CORROMPI:-}" ] || printf 'manomesso\n' >>"$st/assets/install.sh"
+	if [ -n "${SICUREZZA:-}" ]; then
+		# il manifest di un rilascio di sicurezza, come lo scrive release.yml (ADR 0438 D2)
+		printf '{"arch":"amd64","minProtocol":1,"os":"linux","security":true,"sha256":"%s","url":"https://github.com/monsterterminal/connector/releases/download/v9.9.9/monsterterminal-connector_9.9.9_linux_amd64","version":"9.9.9"}' "$(printf x | sha256sum | cut -d' ' -f1)" >"$st/assets/update-manifest-amd64.json"
+		(cd "$st/assets" && sha256sum monsterterminal-connector_* install.sh update-manifest-amd64.json >SHA256SUMS)
+	fi
 	GH_STATE=$st PATH="$tmp/bin:$PATH" HOME="$tmp/home" python3 - "$st" "$answers" sh "$tmp/firma.sh" "$@" <<'PY'
 import os, pty, sys, select
 st, answers, argv = sys.argv[1], sys.argv[2].split("|") if sys.argv[2] else [], sys.argv[3:]
@@ -104,6 +109,13 @@ check "ogni firma si verifica con la chiave pubblica" 'for f in SHA256SUMS insta
 check "release tolta dalla bozza" 'grep -q -- "--draft=false" "$tmp/st-ok/edits"'
 check "la passphrase non compare nella trascrizione" '! out ok | grep -qF "$PASSPHRASE"'
 check "v davanti alla versione aggiunta da sé" 'out ok | grep -q "bozza v9.9.9"'
+
+check "senza security nel manifest nessun avviso di sicurezza" '! out ok | grep -q "MANIFEST DI SICUREZZA"'
+
+SICUREZZA=1 corsa sicurezza "$PASSPHRASE|s" 9.9.9 --key "$tmp/k.key" --repo prova/connettore --no-rebuild
+check "manifest con security:true: avviso vistoso PRIMA della passphrase, poi firma e pubblica" '[ "$(rc sicurezza)" = 0 ] && out sicurezza | tr -d "\r" | awk "/MANIFEST DI SICUREZZA/ {s=NR} /Passphrase di/ {p=NR} END {exit !(s && p && s < p)}"'
+check "manifest di sicurezza firmato così com'è (security dentro la firma)" 'openssl pkeyutl -verify -pubin -inkey "$tmp/k.pub" -rawin -in "$tmp/st-sicurezza/assets/update-manifest-amd64.json" -sigfile "$tmp/st-sicurezza/uploaded/update-manifest-amd64.json.sig" >/dev/null && grep -q "\"security\":true" "$tmp/st-sicurezza/assets/update-manifest-amd64.json"'
+check "pubblicazione di sicurezza annunciata" 'out sicurezza | grep -q "Rilascio DI SICUREZZA pubblicato"'
 
 corsa no "$PASSPHRASE|n" 9.9.9 --key "$tmp/k.key" --repo prova/connettore --no-rebuild
 check "conferma negata: firme caricate, release ancora in bozza" '[ "$(rc no)" = 0 ] && [ "$(ls "$tmp/st-no/uploaded" | wc -l)" = 3 ] && [ ! -e "$tmp/st-no/edits" ]'

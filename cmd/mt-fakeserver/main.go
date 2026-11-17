@@ -7,8 +7,20 @@
 //
 // All'avvio conia i token di installazione (uno per riga nel token-file, 0600; senza -token-file li
 // stampa su stdout come TOKEN=mti_…) e riscrive lo status-file in JSON a ogni evento osservato
-// (registrazioni con hostname, arch e versione; upgrade; collegamenti; hello), così il banco
-// asserisce leggendo un file invece di interpretare i log. I log umani vanno su stderr.
+// (registrazioni con hostname, arch e versione; upgrade; collegamenti; hello; update.check e
+// update.result; i connector.restarted), così il banco asserisce leggendo un file invece di
+// interpretare i log. I log umani vanno su stderr.
+//
+// Con -command-dir CARTELLA il banco comanda il backend finto scrivendo file JSON nella cartella
+// (consumati e cancellati, in ordine di nome, ogni 250 ms), senza porte né rete in più:
+//
+//	{"action":"push","manifest":{…},"signature":"base64"}   update.available a tutti gli host collegati
+//	{"action":"offer","manifest":{…},"signature":"base64"}  risposta ai prossimi update.check (senza
+//	                                                         manifest: torna a update.none)
+//	{"action":"auto-update","value":false}                   interruttore del backend (ADR 0438 D6),
+//	                                                         anche in config.update subito; senza value
+//	                                                         il campo torna assente (acceso)
+//	{"action":"session.open","session":"nome"}               session.open (crea) su tutti gli host
 package main
 
 import (
@@ -20,6 +32,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math/big"
@@ -27,6 +40,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -61,6 +75,22 @@ type status struct {
 	Connects        int             `json:"connects"`
 	Hellos          int             `json:"hellos"`
 	LastHello       *protocol.Hello `json:"lastHello,omitempty"`
+	// Aggiornamento automatico (ADR 0438): update.check ricevuti, update.none mandati, update.result
+	// ricevuti e i connector.restarted (motivo update/rollback) degli host.
+	UpdateChecks  int                           `json:"updateChecks"`
+	UpdateNones   int                           `json:"updateNones"`
+	UpdateResults []protocol.UpdateResult       `json:"updateResults"`
+	Restarts      []protocol.ConnectorRestarted `json:"restarts"`
+	CommandsRun   int                           `json:"commandsRun"`
+}
+
+// command è un file di comando del banco (-command-dir).
+type command struct {
+	Action    string                   `json:"action"`
+	Manifest  *protocol.UpdateManifest `json:"manifest,omitempty"`
+	Signature string                   `json:"signature,omitempty"`
+	Value     *bool                    `json:"value,omitempty"`
+	Session   string                   `json:"session,omitempty"`
 }
 
 func main() {
@@ -78,6 +108,7 @@ func run(args []string) int {
 	statusFile := fs.String("status-file", "", "file JSON riscritto a ogni evento")
 	otherTokens := fs.Int("other-tokens", 0, "token di installazione di un ALTRO spazio di lavoro (ADR 0409 A2)")
 	otherTokenFile := fs.String("other-token-file", "", "file 0600 dei token dell'altro spazio (obbligatorio con -other-tokens)")
+	commandDir := fs.String("command-dir", "", "cartella dei file di comando del banco (aggiornamento automatico)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -155,6 +186,13 @@ func run(args []string) int {
 			w.onHello(h)
 		}
 	}()
+	if *commandDir != "" {
+		if err := os.MkdirAll(*commandDir, 0o700); err != nil {
+			fmt.Fprintln(os.Stderr, "mt-fakeserver:", err)
+			return 1
+		}
+		go pollCommands(*commandDir, w, 250*time.Millisecond)
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -230,6 +268,69 @@ func (w *statusWriter) onHello(h protocol.Hello) {
 	}
 }
 
+// pollCommands legge e consuma i file di comando, in ordine di nome, a ogni intervallo.
+func pollCommands(dir string, w *statusWriter, every time.Duration) {
+	for {
+		time.Sleep(every)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, e.Name())
+			raw, err := os.ReadFile(path)
+			_ = os.Remove(path)
+			if err != nil {
+				continue
+			}
+			if err := w.runCommand(raw); err != nil {
+				fmt.Fprintf(os.Stderr, "mt-fakeserver: comando %s: %v\n", e.Name(), err)
+			} else {
+				fmt.Fprintf(os.Stderr, "mt-fakeserver: comando %s eseguito\n", e.Name())
+			}
+		}
+	}
+}
+
+// runCommand esegue un comando del banco e riscrive lo status-file.
+func (w *statusWriter) runCommand(raw []byte) error {
+	var c command
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return err
+	}
+	switch c.Action {
+	case "push":
+		if c.Manifest == nil {
+			return errors.New("push senza manifest")
+		}
+		n := w.s.PushUpdate(fakeserver.Offer{Manifest: *c.Manifest, Signature: c.Signature})
+		fmt.Fprintf(os.Stderr, "mt-fakeserver: update.available %s spinto a %d host\n", c.Manifest.Version, n)
+	case "offer":
+		if c.Manifest == nil {
+			w.s.SetOffer(nil)
+		} else {
+			w.s.SetOffer(&fakeserver.Offer{Manifest: *c.Manifest, Signature: c.Signature})
+		}
+	case "auto-update":
+		w.s.SetAutoUpdate(c.Value)
+	case "session.open":
+		if c.Session == "" {
+			return errors.New("session.open senza session")
+		}
+		n := w.s.OpenSessionAll(c.Session)
+		fmt.Fprintf(os.Stderr, "mt-fakeserver: session.open %s a %d host\n", c.Session, n)
+	default:
+		return fmt.Errorf("azione sconosciuta %q", c.Action)
+	}
+	w.mu.Lock()
+	w.st.CommandsRun++
+	w.mu.Unlock()
+	return w.write()
+}
+
 // write riscrive lo status-file per intero, in modo atomico (file accanto + rename).
 func (w *statusWriter) write() error {
 	w.mu.Lock()
@@ -250,6 +351,14 @@ func (w *statusWriter) write() error {
 	}
 	w.st.Upgrades = w.s.Upgrades()
 	w.st.Connects = w.s.Connects()
+	w.st.UpdateChecks = w.s.UpdateChecks()
+	w.st.UpdateNones = w.s.UpdateNones()
+	if w.st.UpdateResults = w.s.AllUpdateResults(); w.st.UpdateResults == nil {
+		w.st.UpdateResults = []protocol.UpdateResult{}
+	}
+	if w.st.Restarts = w.s.Restarts(); w.st.Restarts == nil {
+		w.st.Restarts = []protocol.ConnectorRestarted{}
+	}
 	w.st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if w.path == "" {
 		return nil

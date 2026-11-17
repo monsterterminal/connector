@@ -107,6 +107,8 @@ type Config struct {
 	Requests Requests
 	// Files riceve i file di DragMeHere (ADR 0409 A1.5); nil = nessun ricevitore.
 	Files Files
+	// Updates è l'aggiornamento automatico (ADR 0438); nil = nessun aggiornamento.
+	Updates Updates
 	// Coda dell'output del terminale: soglie della contropressione e accorpamento (§1.7).
 	OutputHighWater, OutputLowWater int
 	OutputFlushDelay                time.Duration
@@ -354,6 +356,13 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		defer cfg.Files.Detach()
 	}
 
+	if cfg.Updates != nil {
+		// Dopo welcome (ADR 0438 D3 punto 3, D4): esiti dalla cassetta delle lettere, poi update.check.
+		// L'interruttore del backend è già arrivato con OnWelcome.
+		cfg.Updates.Attach(&termOut{ctx: sctx, cfg: cfg, w: w})
+		defer cfg.Updates.Detach()
+	}
+
 	st := newSyncState()
 	sendErr := make(chan error, 1)
 	if cfg.Events != nil {
@@ -407,6 +416,9 @@ func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, d
 		return nil
 	}
 	if cfg.Files != nil && cfg.Files.Handle(env) {
+		return nil
+	}
+	if cfg.Updates != nil && cfg.Updates.Handle(env) {
 		return nil
 	}
 	switch env.Type {

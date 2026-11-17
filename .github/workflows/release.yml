@@ -1,5 +1,6 @@
 # Rilascio: al tag vX.Y.Z la CI compila in modo riproducibile, calcola SHA256SUMS, scrive i manifest
-# degli aggiornamenti (§1.10) e riempie install.sh, poi crea una release in BOZZA. La CI NON firma
+# degli aggiornamenti (§1.10; `security` da packaging/release.json, ADR 0438 D2) e riempie install.sh,
+# poi crea una release in BOZZA. La CI NON firma
 # mai: la chiave privata non sta su GitHub né sul server (§1.17). La firma e la pubblicazione le fa
 # chi custodisce la chiave con scripts/firma-rilascio.sh.
 name: Release (bozza)
@@ -36,14 +37,25 @@ jobs:
         run: sed "s/@VERSION@/$VERSION/" packaging/install.sh > dist/install.sh
       - name: SHA256SUMS e manifest degli aggiornamenti
         run: |
+          # Rilascio di sicurezza (ADR 0438 D2): lo dice packaging/release.json al tag, e finisce nel
+          # manifest FIRMATO solo quando è vero; il backend non può deciderlo. Il valore deve essere
+          # esattamente true o false: qualunque altra cosa ferma il rilascio.
+          security=$(jq -r '.security' packaging/release.json)
+          case "$security" in
+            true) sec='"security":true,' ;;
+            false) sec='' ;;
+            *) echo "packaging/release.json: security deve essere true o false, trovato '$security'" >&2; exit 1 ;;
+          esac
           cd dist
           sha256sum monsterterminal-connector_* install.sh > SHA256SUMS
           for arch in amd64 arm64; do
             name="monsterterminal-connector_${VERSION}_linux_${arch}"
             sha=$(grep "  $name\$" SHA256SUMS | cut -d' ' -f1)
-            # forma canonica: chiavi in ordine alfabetico, senza spazi (§1.9/§1.10)
-            printf '{"arch":"%s","minProtocol":1,"os":"linux","sha256":"%s","url":"https://github.com/%s/releases/download/%s/%s","version":"%s"}' \
-              "$arch" "$sha" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$name" "$VERSION" > "update-manifest-linux-${arch}.json"
+            # forma canonica: chiavi in ordine alfabetico, senza spazi (§1.9/§1.10, ADR 0438 D2):
+            # arch, minProtocol, os, [security], sha256, url, version
+            printf '{"arch":"%s","minProtocol":1,"os":"linux",%s"sha256":"%s","url":"https://github.com/%s/releases/download/%s/%s","version":"%s"}' \
+              "$arch" "$sec" "$sha" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$name" "$VERSION" > "update-manifest-linux-${arch}.json"
+            cat "update-manifest-linux-${arch}.json"; echo
           done
           cat SHA256SUMS
       - name: release in bozza
