@@ -42,7 +42,7 @@ jobs:
   # (ADR 0438): update, ritorno alla versione precedente, i negativi. Pull delle immagini e build
   # Go dentro Docker: ~4-6 minuti a cache fredda sul runner GitHub.
   banco:
-    name: banco di prova (systemd: install, update, rollback, negativi)
+    name: "banco di prova (systemd: install, update, rollback, negativi)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
