@@ -14,7 +14,8 @@
 #                       v0.0.1-banco, update.result rolled-back (ADR 0438 D3 punto 4)
 #   banco.sh update-negative  firma errata, chiave delle ricette, downgrade, sha diverso, URL fuori
 #                       repo, interruttore del backend, security, auto_update locale, binario non
-#                       firmato messo a mano in update/, symlink in update/ ⇒ niente installato
+#                       firmato messo a mano in update/, symlink in update/, manifest per un'altra
+#                       architettura ⇒ niente installato
 #   banco.sh uninstall  --uninstall --purge ⇒ servizio, binario, configurazione e stato assenti
 #   banco.sh status     lo status-file del backend finto
 #   banco.sh all        up, negative, install, spazi, update, rollback, update-negative, uninstall
@@ -835,6 +836,19 @@ PY
 	echo "$STATUS/manifests/$1.json"
 }
 
+# L'altra architettura dei rilasci (common.json#arch): amd64 ⇄ arm64.
+other_arch() { if [ "$ARCH" = amd64 ]; then echo arm64; else echo amd64; fi; }
+
+# fake_manifest_arch VERSIONE ARCH: un manifest canonico (sha di un asset qualsiasi, URL sotto le
+# release) per un'altra architettura, firmato poi con la chiave del banco: la firma è buona, la
+# piattaforma no.
+fake_manifest_arch() {
+	mkdir -p "$STATUS/manifests"
+	printf '{"arch":"%s","minProtocol":1,"os":"linux","sha256":"%s","url":"%s/v%s/monsterterminal-connector_%s_linux_%s","version":"%s"}' \
+		"$2" "$(asset_sha "$UPD1")" "$GH_PREFIX" "$1" "$1" "$2" "$1" >"$STATUS/manifests/$1-$2.json"
+	echo "$STATUS/manifests/$1-$2.json"
+}
+
 # Scrive nella cassetta update/ come l'utente del connettore: binario, manifest, firma (file locali
 # copiati nel container) e infine apply.request. È ciò che un utente compromesso potrebbe fare.
 user_plants() {
@@ -950,6 +964,14 @@ cmd_update_negative() {
 	assert "update.result failed download-failed v0.1.2-banco entro 60 s (symlink non seguito)" wait_result 0.1.2-banco failed download-failed 60
 	assert "macchina intatta, nessun .prev, nessuna copia nella cartella dell'updater" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev && ! docker exec $HOST_C test -e /var/lib/monsterterminal-updater/binary"
 	assert "cassetta pulita e nessuna richiesta in attesa" mailbox_clean
+
+	step "N11 — manifest firmato valido per un'ALTRA architettura ($(other_arch)) a un host $ARCH ⇒ failed wrong-platform, nessun download (ADR 0438 D3 punto 1)"
+	dl_before=$(binary_downloads)
+	push_manifest "$(fake_manifest_arch 0.1.3-banco "$(other_arch)")" "$KEYS/updates.key"
+	assert "update.result failed wrong-platform v0.1.3-banco entro 30 s" wait_result 0.1.3-banco failed wrong-platform 30
+	assert "nessun download (nginx: $dl_before prima e dopo)" test "$(binary_downloads)" = "$dl_before"
+	assert "nessun apply.request" hx_sh '! test -e /var/lib/monsterterminal/update/apply.request'
+	assert "binario, conf, unit e token intatti" test "$(snapshot_host)" = "$before"
 	assert "servizio attivo, «version» = $UPD3" hx_sh "test \"\$(systemctl is-active monsterterminal-connector)\" = active && test \"\$(/usr/local/bin/monsterterminal-connector version)\" = $UPD3"
 	msg "   update.result finora: $(results_json)"
 	verdict "update-negative"
