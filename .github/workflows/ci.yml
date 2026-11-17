@@ -21,7 +21,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
       - name: formato
         run: |
-          if [ -n "$(gofmt -l .)" ]; then gofmt -l .; echo "gofmt: file non formattati"; exit 1; fi
+          if [ -n "$(gofmt -l .)" ]; then gofmt -l .; gofmt -d .; echo "gofmt: file non formattati"; exit 1; fi
       - run: go vet ./...
       - run: go test -race ./...
 

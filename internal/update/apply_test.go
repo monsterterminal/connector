@@ -42,11 +42,14 @@ func newBench(t *testing.T) *bench {
 
 func (b *bench) cfg() ApplyConfig {
 	return ApplyConfig{
-		StateDir: b.state, Binary: b.bin, Running: "0.6.1",
+		StateDir:  b.state,
+		Binary:    b.bin,
+		Running:   "0.6.1",
 		Platform:  Platform{OS: "linux", Arch: "amd64", Protocol: 1, Version: "0.6.1"},
 		Key:       b.pub,
 		Systemctl: func(args ...string) error { b.calls = append(b.calls, strings.Join(args, " ")); return nil },
-		UID:       os.Getuid(), Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		UID:       os.Getuid(),
+		Logger:    slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 }
 
