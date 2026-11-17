@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -78,6 +79,9 @@ type app struct {
 	systemctl update.Systemctl
 	// getuid è l'utente che esegue (per la cartella dell'updater); nil = os.Getuid.
 	getuid func() int
+	// updateKey è la chiave con cui l'updater riverifica i manifest; nil = mt-updates-2026 incorporata
+	// (solo i test la sostituiscono, con una coppia generata lì).
+	updateKey ed25519.PublicKey
 }
 
 func defaultApp() app {

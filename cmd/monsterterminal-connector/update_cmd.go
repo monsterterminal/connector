@@ -54,7 +54,7 @@ func (a app) applyConfig(log *slog.Logger, stateDir string) (update.ApplyConfig,
 		uid = a.getuid()
 	}
 	return update.ApplyConfig{
-		StateDir: stateDir, Binary: bin, Running: version,
+		StateDir: stateDir, Binary: bin, Running: version, Key: a.updateKey,
 		Systemctl: a.systemctl, UID: uid, Logger: log, Now: a.now,
 	}, nil
 }

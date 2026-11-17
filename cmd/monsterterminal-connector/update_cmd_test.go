@@ -84,6 +84,7 @@ func (h *updateHarness) app() app {
 	a.executable = func() (string, error) { return h.bin, nil }
 	a.systemctl = func(args ...string) error { h.calls = append(h.calls, strings.Join(args, " ")); return nil }
 	a.getuid = os.Getuid
+	a.updateKey = h.pub
 	return a
 }
 
