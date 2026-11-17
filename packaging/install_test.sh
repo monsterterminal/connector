@@ -178,7 +178,7 @@ check "path: avvia l’unità updater" 'printf "%s" "$up" | grep -q "^Unit=monst
 us=$(render_updater_service mario)
 check "updater: oneshot, root (senza User=), apply-update col binario INSTALLATO e il file dell’host" 'printf "%s" "$us" | grep -q "^Type=oneshot$" && ! printf "%s" "$us" | grep -q "^User=" && printf "%s" "$us" | grep -q "^ExecStart=/usr/local/bin/monsterterminal-connector apply-update -state-dir /var/lib/monsterterminal -config /etc/monsterterminal/connector.conf -service-user mario$"'
 check "updater e ritorno: un tempo massimo (una FIFO non li tiene appesi)" 'printf "%s" "$us" | grep -q "^TimeoutStartSec=10min$" && render_rollback_service mario | grep -q "^TimeoutStartSec=2min$"'
-check "updater: limite di avvio (niente ciclo dell’unità path se apply.request resta)" 'printf "%s" "$us" | grep -q "^StartLimitIntervalSec=10min$" && printf "%s" "$us" | grep -q "^StartLimitBurst=3$"'
+check "updater: limite di avvio (niente ciclo dell’unità path se apply.request resta)" 'printf "%s" "$us" | grep -q "^StartLimitIntervalSec=10min$" && printf "%s" "$us" | grep -q "^StartLimitBurst=20$"'
 check "servizio come root (--user root): l’updater riceve -service-user root" 'render_updater_service root | grep -q -- "-service-user root$" && render_rollback_service root | grep -q -- "-service-user root$"'
 rt=$(render_rollback_timer "$MT_ROLLBACK_AFTER")
 check "timer: 5 minuti di default (§1.10 punto 6)" 'printf "%s" "$rt" | grep -q "^OnActiveSec=5min$"'

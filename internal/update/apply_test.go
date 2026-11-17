@@ -54,6 +54,7 @@ func (b *bench) cfg() ApplyConfig {
 		Key:         b.pub,
 		Systemctl:   func(args ...string) error { b.calls = append(b.calls, strings.Join(args, " ")); return nil },
 		UID:         os.Getuid(),
+		ServiceUID:  -1, // l'owner di <state>; TestApplyUtenteDelServizio lo mette esplicito
 		Logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 }

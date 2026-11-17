@@ -53,7 +53,7 @@ firma e `apply.request`; l'updater **non si fida di nulla di ciò che trova lì*
   dall'`User=` del servizio, `root` compreso quando il connettore gira come root): `/var/lib/monsterterminal`
   e `update/` devono essere suoi, altrimenti l'updater non tocca niente. Se la cassetta non si apre,
   `apply.request` si toglie solo quando la cartella di stato è davvero dell'utente del servizio;
-  in ogni altro caso il limite di avvio dell'unità (`StartLimitBurst=3` in 10 minuti) ferma il ciclo
+  in ogni altro caso il limite di avvio dell'unità (`StartLimitBurst=20` in 10 minuti) ferma il ciclo
   dell'unità path.
 - **Mai più per percorso**: la cassetta dell'utente e la cartella dell'updater si aprono una volta
   sola come `os.Root` (descrittori di cartella) e ogni lettura, scrittura, cancellazione e rinomina

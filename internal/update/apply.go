@@ -73,7 +73,8 @@ type ApplyConfig struct {
 	UID int
 	// ServiceUID è l'utente del servizio del connettore (User= dell'unità, dall'opzione -service-user;
 	// root se il servizio gira come root): <state> e update/ devono essere suoi. -1 = l'owner di
-	// <state>, che install.sh crea per l'utente del servizio sotto un genitore di root.
+	// <state>, che install.sh crea per l'utente del servizio sotto un genitore di root. Il valore
+	// zero vale root: chi non lo imposta pretende una cartella di root, cioè si chiude.
 	ServiceUID int
 	Logger     *slog.Logger
 	Now        func() time.Time

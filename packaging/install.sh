@@ -284,14 +284,15 @@ render_updater_path() {
 
 # $1 è l'utente del servizio (User= dell'unità del connettore, root compreso): l'updater pretende che
 # la cartella di stato e la cassetta siano sue. StartLimit: se apply.request non si può togliere in
-# sicurezza, l'unità path non deve rilanciare l'updater in ciclo.
+# sicurezza, l'unità path non deve rilanciare l'updater in ciclo; 20 avvii in 10 minuti bastano a
+# qualunque sequenza legittima (il banco ne fa sette) e fermano un ciclo dopo pochi secondi.
 render_updater_service() {
 	printf '%s\n' \
 		"[Unit]" \
 		"Description=MonsterTerminal connector: applica un aggiornamento firmato (updater root)" \
 		"Documentation=https://github.com/monsterterminal/connector" \
 		"StartLimitIntervalSec=10min" \
-		"StartLimitBurst=3" \
+		"StartLimitBurst=20" \
 		"" \
 		"[Service]" \
 		"Type=oneshot" \
