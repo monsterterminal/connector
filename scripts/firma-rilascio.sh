@@ -6,7 +6,8 @@
 #   2. clona il repository al tag in una cartella temporanea, ricompila con la stessa toolchain della CI
 #      (quella di go.mod) e confronta gli hash con SHA256SUMS: è la vera verifica d'integrità, dimostra
 #      che la CI non ha alterato nulla;
-#   3. controlla che la chiave sia mt-updates-2026 (impronta), chiede la passphrase UNA volta a video,
+#   3. dice a voce alta se il manifest porta "security":true (ADR 0438 D2: ignora l'interruttore del
+#      cliente), controlla che la chiave sia mt-updates-2026 (impronta), chiede la passphrase UNA volta a video,
 #      firma SHA256SUMS, ogni manifest e install.sh (Ed25519 grezzo, 64 byte) e verifica subito ogni
 #      firma con la chiave pubblica derivata;
 #   4. carica le firme e, dopo una conferma, pubblica la release.
@@ -96,6 +97,24 @@ else
 	say "== 2. Ricompilazione saltata (--no-rebuild): gli hash della CI NON sono verificati"
 fi
 
+# Un manifest con "security":true (ADR 0438 D2) ignora l'interruttore del cliente nella pagina Server:
+# chi firma deve saperlo PRIMA di scrivere la passphrase. Il contrassegno viene da packaging/release.json
+# al tag, lo ha scritto la CI nel manifest, e qui si legge dal manifest stesso: è ciò che si firma.
+if grep -lq '"security":true' "$work/assets"/update-manifest-*.json 2>/dev/null; then
+	say ""
+	say "############################################################"
+	say "#                                                          #"
+	say "#   MANIFEST DI SICUREZZA: questo rilascio ignora          #"
+	say "#   l'interruttore degli aggiornamenti del cliente         #"
+	say "#   (non il file locale dell'host). ADR 0438 D2.           #"
+	say "#                                                          #"
+	say "############################################################"
+	say ""
+	SECURITY_RELEASE=yes
+else
+	SECURITY_RELEASE=no
+fi
+
 say "== 3. Chiave e passphrase"
 # La passphrase si legge una volta, senza eco, e arriva a openssl sullo standard input (printf è un
 # comando interno della shell: non compare nell'elenco dei processi). Con una chiave non cifrata
@@ -138,5 +157,6 @@ else
 	fi
 	gh release edit "$TAG" --repo "$REPO" --draft=false >/dev/null
 	say "== Release $TAG pubblicata: https://github.com/$REPO/releases/tag/$TAG"
+	[ "$SECURITY_RELEASE" = no ] || say "== Rilascio DI SICUREZZA pubblicato: gli host con l'interruttore del cliente spento lo installano lo stesso"
 fi
 say "Chiave pubblica usata (32 byte, base64): $(openssl pkey -in "$work/pub.pem" -pubin -outform DER | tail -c 32 | base64)"

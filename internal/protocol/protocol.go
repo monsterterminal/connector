@@ -19,7 +19,7 @@ import (
 const Version = 1
 
 // SchemaVersion è la versione degli schemi JSON che questo codice implementa (§1.19).
-const SchemaVersion = "0.9.0"
+const SchemaVersion = "0.10.0"
 
 // HeaderSchema dichiara al backend la versione degli schemi, su POST /v1/register e sull'upgrade
 // di GET /v1 (§1.15, ADR 0418 D5). Il backend decide da QUESTO header, chiamata per chiamata, se la
@@ -172,7 +172,14 @@ type HostConfig struct {
 	SessionIdleThresholds       map[string]int `json:"sessionIdleThresholds"`
 	Recording                   Recording      `json:"recording"`
 	MaxChannels                 int            `json:"maxChannels"`
+	// AutoUpdate, dalla 0.10.0 (ADR 0438 D6): l'interruttore degli aggiornamenti scelto dal cliente
+	// nella pagina Server; assente = acceso. Un manifest con security ignora questo interruttore, mai
+	// il file locale dell'host.
+	AutoUpdate *bool `json:"autoUpdate,omitempty"`
 }
+
+// AutoUpdateOn legge l'interruttore del backend: assente vale acceso.
+func (c HostConfig) AutoUpdateOn() bool { return c.AutoUpdate == nil || *c.AutoUpdate }
 
 // Validate controlla i vincoli di objects/host-config.json.
 func (c HostConfig) Validate() error {

@@ -25,6 +25,7 @@ import (
 	"github.com/monsterterminal/connector/internal/register"
 	"github.com/monsterterminal/connector/internal/terminal"
 	"github.com/monsterterminal/connector/internal/transport"
+	"github.com/monsterterminal/connector/internal/update"
 )
 
 const (
@@ -68,6 +69,15 @@ type app struct {
 	// sessionProbe legge se un client è collegato e attivo sulla sessione (finestra adattiva, §2.12);
 	// nil = tmux sul socket tmuxSocket.
 	sessionProbe agents.SessionProbe
+	// updateHTTP scarica i binari degli aggiornamenti (ADR 0438); nil = client con la verifica TLS di
+	// sistema. I test lo sostituiscono con un trasporto che riscrive l'host di GitHub.
+	updateHTTP *http.Client
+	// updateTuning ritocca i ritmi del gestore degli aggiornamenti (solo test).
+	updateTuning func(*update.Config)
+	// systemctl esegue systemctl per apply-update e rollback-check; nil = quello vero.
+	systemctl update.Systemctl
+	// getuid è l'utente che esegue (per la cartella dell'updater); nil = os.Getuid.
+	getuid func() int
 }
 
 func defaultApp() app {
@@ -144,6 +154,10 @@ func (a app) run(ctx context.Context, args []string) int {
 		fmt.Fprintln(a.stdout, version)
 	case "hooks":
 		err = a.cmdHooks(fs.Arg(0), *stateDir, *yes)
+	case "apply-update":
+		err = a.cmdApplyUpdate(log, *stateDir)
+	case "rollback-check":
+		err = a.cmdRollbackCheck(log, *stateDir)
 	default:
 		a.usage()
 		return exitUsage
@@ -168,7 +182,7 @@ func (a app) run(ctx context.Context, args []string) int {
 }
 
 func (a app) usage() {
-	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace|-check]|run [-config FILE]|version|hooks install [-yes]|hooks remove [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
+	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace|-check]|run [-config FILE]|version|hooks install [-yes]|hooks remove|apply-update|rollback-check [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
 }
 
 func (a app) client(timeout time.Duration) *http.Client {
@@ -324,6 +338,19 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	} else {
 		log.Warn("home dell'utente non trovata: DragMeHere spento su questo host", "errore", fmt.Sprint(err))
 	}
+	// Aggiornamento automatico (ADR 0438 D3, D4): il gestore chiede, verifica e prepara nella sua
+	// cartella <state>/update; l'unità root applica. Il file locale è assoluto (D6).
+	ucfg := update.Config{
+		Dir: filepath.Join(stateDir, update.UpdateSubdir), Version: version, HostAutoUpdate: hc.AutoUpdate,
+		HTTPClient: a.updateClient(), Logger: log, Now: a.now,
+	}
+	if a.updateTuning != nil {
+		a.updateTuning(&ucfg)
+	}
+	upd, err := update.New(ucfg)
+	if err != nil {
+		return fmt.Errorf("aggiornamenti: %w", err)
+	}
 	cfg := transport.Config{
 		URL:        "wss://" + strings.TrimPrefix(server, "https://") + "/v1",
 		Token:      tok,
@@ -333,6 +360,7 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 		Terminal:   terminal.New(terminal.Config{Socket: a.tmuxSocket, Logger: log}),
 		Requests:   requests,
 		Files:      recv,
+		Updates:    upd,
 		Now:        a.now,
 		Hello: func() protocol.Hello {
 			return protocol.Hello{
@@ -343,11 +371,23 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 			}
 		},
 	}
-	// Le soglie di inattività vengono dalla configurazione dell'host (§1.11).
-	cfg.OnWelcome = func(w protocol.Welcome) { thresholds.Set(w.Config) }
-	cfg.OnConfig = func(c protocol.HostConfig) { thresholds.Set(c) }
+	// Le soglie di inattività e l'interruttore degli aggiornamenti vengono dalla configurazione
+	// dell'host (§1.11, ADR 0438 D6).
+	cfg.OnWelcome = func(w protocol.Welcome) {
+		thresholds.Set(w.Config)
+		upd.SetBackendAutoUpdate(w.Config.AutoUpdate)
+	}
+	cfg.OnConfig = func(c protocol.HostConfig) {
+		thresholds.Set(c)
+		upd.SetBackendAutoUpdate(c.AutoUpdate)
+	}
 	if a.configure != nil {
 		a.configure(&cfg)
+	}
+	if bancoBrokenHello != "" {
+		// Solo i banchi di prova (packaging/banco, scenario «rollback»): un binario che registra il
+		// proprio avvio ma non arriva mai a welcome, per provare il ritorno alla versione precedente.
+		return errors.New("binario di banco: hello volutamente rotto (bancoBrokenHello), non mi collego")
 	}
 	err = transport.Run(ctx, cfg)
 	// Uscita regolare (segnale): la prossima partenza non è un crash.
@@ -424,7 +464,7 @@ func writeRunState(stateDir string, st runState) error {
 // restartReason sceglie il motivo di connector.restarted (enum dello schema 0.1.0): il cambio di
 // versione prima di tutto, poi il riavvio della macchina, poi l'uscita irregolare.
 func restartReason(prevVersion, curVersion string, hostRebooted, unclean bool) string {
-	switch c := compareSemver(curVersion, prevVersion); {
+	switch c := protocol.CompareSemver(curVersion, prevVersion); {
 	case c > 0:
 		return "update"
 	case c < 0:
@@ -438,63 +478,6 @@ func restartReason(prevVersion, curVersion string, hostRebooted, unclean bool) s
 	default:
 		return "service-restart"
 	}
-}
-
-// compareSemver confronta due versioni semver 2.0 (senza i metadati di build): -1, 0, 1.
-func compareSemver(a, b string) int {
-	a, _, _ = strings.Cut(a, "+")
-	b, _, _ = strings.Cut(b, "+")
-	ac, apre, _ := strings.Cut(a, "-")
-	bc, bpre, _ := strings.Cut(b, "-")
-	ap, bp := strings.Split(ac, "."), strings.Split(bc, ".")
-	for i := 0; i < 3 && i < len(ap) && i < len(bp); i++ {
-		x, _ := strconv.Atoi(ap[i])
-		y, _ := strconv.Atoi(bp[i])
-		if x != y {
-			if x < y {
-				return -1
-			}
-			return 1
-		}
-	}
-	switch {
-	case apre == bpre:
-		return 0
-	case apre == "": // una release precede le sue pre-release
-		return 1
-	case bpre == "":
-		return -1
-	}
-	ai, bi := strings.Split(apre, "."), strings.Split(bpre, ".")
-	for i := 0; i < len(ai) && i < len(bi); i++ {
-		if ai[i] == bi[i] {
-			continue
-		}
-		x, xerr := strconv.Atoi(ai[i])
-		y, yerr := strconv.Atoi(bi[i])
-		switch {
-		case xerr == nil && yerr == nil:
-			if x < y {
-				return -1
-			}
-			return 1
-		case xerr == nil: // numerico < alfanumerico
-			return -1
-		case yerr == nil:
-			return 1
-		case ai[i] < bi[i]:
-			return -1
-		default:
-			return 1
-		}
-	}
-	switch {
-	case len(ai) < len(bi):
-		return -1
-	case len(ai) > len(bi):
-		return 1
-	}
-	return 0
 }
 
 // linuxBootTime legge l'istante di avvio della macchina da /proc/stat (btime).

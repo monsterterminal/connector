@@ -279,14 +279,14 @@ func (a app) startAgents(ctx context.Context, log *slog.Logger, j *journal.Journ
 	return th, rq
 }
 
-// capabilities dichiarate in hello (§1.6): `hooks` se gli hook di Claude Code sono installati.
+// capabilities dichiarate in hello (§1.6): `hooks` se gli hook di Claude Code sono installati;
+// `auto-update` sempre, dalla v0.7.0 (ADR 0438): il connettore sa chiedere e preparare un
+// aggiornamento. Che poi lo applichi lo dicono gli interruttori (autoUpdateEnabled in hello e
+// l'interruttore del backend), non la capacità.
 func (a app) capabilities() []string {
-	home, err := a.home()
-	if err != nil {
-		return []string{}
+	caps := []string{}
+	if home, err := a.home(); err == nil && agents.Installed(agents.SettingsPath(home)) {
+		caps = append(caps, "hooks")
 	}
-	if agents.Installed(agents.SettingsPath(home)) {
-		return []string{"hooks"}
-	}
-	return []string{}
+	return append(caps, "auto-update")
 }

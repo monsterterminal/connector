@@ -12,6 +12,7 @@ import (
 	"github.com/monsterterminal/connector/internal/files"
 	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/terminal"
+	"github.com/monsterterminal/connector/internal/update"
 )
 
 // Ritmo e contropressione dell'output del terminale (§1.7).
@@ -44,6 +45,14 @@ type Requests interface {
 // nil = nessun ricevitore.
 type Files interface {
 	Attach(out files.Out)
+	Handle(env protocol.Envelope) bool
+	Detach()
+}
+
+// Updates è l'aggiornamento automatico (schemi 0.10.0, ADR 0438 D3, D4): dopo welcome riporta gli
+// esiti e invia update.check; tratta update.available e update.none. nil = nessun aggiornamento.
+type Updates interface {
+	Attach(out update.Out)
 	Handle(env protocol.Envelope) bool
 	Detach()
 }

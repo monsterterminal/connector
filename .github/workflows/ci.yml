@@ -37,6 +37,33 @@ jobs:
       - run: bash packaging/install_test.sh
       - run: dash scripts/firma-rilascio_test.sh
 
+  # Il banco con systemd (packaging/banco): il comando di una riga del cliente in un container
+  # Ubuntu con systemd, rilascio locale firmato, backend finto; e l'aggiornamento automatico
+  # (ADR 0438): update, ritorno alla versione precedente, i negativi. Pull delle immagini e build
+  # Go dentro Docker: ~4-6 minuti a cache fredda sul runner GitHub.
+  banco:
+    name: banco di prova (systemd: install, update, rollback, negativi)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash packaging/banco/banco.sh up
+      - run: bash packaging/banco/banco.sh negative
+      - run: bash packaging/banco/banco.sh install
+      - run: bash packaging/banco/banco.sh spazi
+      - run: bash packaging/banco/banco.sh update
+      - run: bash packaging/banco/banco.sh rollback
+      - run: bash packaging/banco/banco.sh update-negative
+      - run: bash packaging/banco/banco.sh uninstall
+      - name: log del banco (sempre)
+        if: always()
+        run: |
+          for f in ~/mt-banco/status/*.log; do [ -f "$f" ] && { echo "== $f"; tail -n 40 "$f"; }; done || true
+          docker logs mt-banco-fakeserver 2>&1 | tail -n 80 || true
+          docker exec mt-banco-host journalctl --no-pager -n 120 -u monsterterminal-connector -u monsterterminal-connector-updater -u monsterterminal-connector-rollback 2>/dev/null || true
+      - if: always()
+        run: bash packaging/banco/banco.sh down
+
   build:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest

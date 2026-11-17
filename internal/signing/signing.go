@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 // KeyID identifica una chiave di firma.
@@ -124,15 +126,9 @@ func verifyWith(k ed25519.PublicKey, message, signature []byte) error {
 	return nil
 }
 
-// Manifest è il manifest di aggiornamento (§1.10, objects/update-manifest.json).
-type Manifest struct {
-	Version     string `json:"version"`
-	OS          string `json:"os"`
-	Arch        string `json:"arch"`
-	URL         string `json:"url"`
-	SHA256      string `json:"sha256"`
-	MinProtocol int    `json:"minProtocol"`
-}
+// Manifest è il manifest di aggiornamento (§1.10, objects/update-manifest.json): la struttura vive
+// in protocol, con i campi nell'ordine della forma canonica (ADR 0438 D2).
+type Manifest = protocol.UpdateManifest
 
 var (
 	semverRe = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$`)

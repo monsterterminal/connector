@@ -1,5 +1,6 @@
 #!/bin/sh
-# Installazione del connettore di MonsterTerminal (spec monsterterminal-saas.md §1.14, ADR 0409 D5-D7).
+# Installazione del connettore di MonsterTerminal (spec monsterterminal-saas.md §1.14, ADR 0409 D5-D7;
+# unità dell'aggiornamento automatico: §1.10, ADR 0438 D3).
 #
 #   curl -fsSL https://monsterterminal.com/install.sh | sudo env MONSTERTERMINAL_INSTALL_TOKEN=mti_… sh
 #   curl -fsSL https://monsterterminal.com/install.sh | sudo env MONSTERTERMINAL_INSTALL_TOKEN=mti_… sh -s -- --user mario
@@ -31,6 +32,17 @@ MT_STATE=/var/lib/monsterterminal
 MT_TOKEN_FILE=$MT_STATE/host-token
 MT_UNIT_NAME=monsterterminal-connector
 MT_UNIT=/etc/systemd/system/$MT_UNIT_NAME.service
+# Aggiornamento automatico (ADR 0438 D3): tre unità in più accanto al servizio. L'unità path osserva
+# apply.request nella cartella del connettore e avvia l'updater (root) col binario installato; il
+# timer di ritorno, armato dall'updater, esegue rollback-check col binario .prev.
+MT_UNIT_DIR=/etc/systemd/system
+MT_UPDATER_PATH=$MT_UNIT_NAME-updater.path
+MT_UPDATER_SERVICE=$MT_UNIT_NAME-updater.service
+MT_ROLLBACK_TIMER=$MT_UNIT_NAME-rollback.timer
+MT_ROLLBACK_SERVICE=$MT_UNIT_NAME-rollback.service
+# Attesa del ritorno (spec §1.10 punto 6): 5 minuti. MT_ROLLBACK_AFTER la accorcia SOLO nei banchi di
+# prova (per esempio 20s): un valore in produzione sarebbe un errore, non un'opzione.
+MT_ROLLBACK_AFTER=${MT_ROLLBACK_AFTER:-5min}
 MT_DEFAULT_USER=monsterterminal
 MT_DEFAULT_SERVER=https://connect.monsterterminal.com
 MT_OS_RELEASE=/etc/os-release
@@ -244,6 +256,62 @@ render_unit() {
 		"" \
 		"[Install]" \
 		"WantedBy=multi-user.target"
+}
+
+# Le unità dell'aggiornamento automatico (ADR 0438 D3). Nessuna ha User=: l'updater e il ritorno
+# girano come root, perché solo root scrive in /usr/local/bin; il connettore resta non privilegiato.
+# L'updater NON si fida di ciò che trova in update/: lo copia in updater/ (root 0700) e riverifica.
+render_updater_path() {
+	printf '%s\n' \
+		"[Unit]" \
+		"Description=MonsterTerminal connector: osserva una richiesta di aggiornamento" \
+		"Documentation=https://github.com/monsterterminal/connector" \
+		"" \
+		"[Path]" \
+		"PathExists=$MT_STATE/update/apply.request" \
+		"Unit=$MT_UPDATER_SERVICE" \
+		"" \
+		"[Install]" \
+		"WantedBy=multi-user.target"
+}
+
+render_updater_service() {
+	printf '%s\n' \
+		"[Unit]" \
+		"Description=MonsterTerminal connector: applica un aggiornamento firmato (updater root)" \
+		"Documentation=https://github.com/monsterterminal/connector" \
+		"" \
+		"[Service]" \
+		"Type=oneshot" \
+		"ExecStart=$MT_BIN apply-update -state-dir $MT_STATE" \
+		"UMask=0077"
+}
+
+# RemainAfterElapse=no: un timer monotonico già scaduto resterebbe caricato e un secondo «start» non lo
+# riarmerebbe; così ogni aggiornamento riparte da zero. OnActiveSec conta dall'avvio del timer.
+render_rollback_timer() {
+	printf '%s\n' \
+		"[Unit]" \
+		"Description=MonsterTerminal connector: ritorno alla versione precedente se la nuova non si collega" \
+		"Documentation=https://github.com/monsterterminal/connector" \
+		"" \
+		"[Timer]" \
+		"OnActiveSec=$1" \
+		"AccuracySec=1s" \
+		"RemainAfterElapse=no" \
+		"Unit=$MT_ROLLBACK_SERVICE"
+}
+
+render_rollback_service() {
+	printf '%s\n' \
+		"[Unit]" \
+		"Description=MonsterTerminal connector: verifica del collegamento dopo un aggiornamento (binario precedente)" \
+		"Documentation=https://github.com/monsterterminal/connector" \
+		"" \
+		"[Service]" \
+		"Type=oneshot" \
+		"ExecStart=$MT_BIN.prev rollback-check -state-dir $MT_STATE" \
+		"UMask=0077"
 }
 
 # La configurazione decisa dal cliente sull'host (§1.11): il backend non la cambia mai.
@@ -478,6 +546,8 @@ install_files() {
 	msg "Installo $MT_BIN e le cartelle"
 	run install -d -m 0755 -o root -g root "$MT_ETC"
 	run install -d -m 0700 -o "$MT_USER" -g "$MT_USER" "$MT_STATE"
+	# La cassetta delle lettere dell'aggiornamento è del connettore; updater/ la crea l'updater (root).
+	run install -d -m 0700 -o "$MT_USER" -g "$MT_USER" "$MT_STATE/update"
 	if [ "$MT_DRY_RUN" = yes ]; then
 		msg "  [dry-run] install -m 0755 $MT_ASSET $MT_BIN"
 		return 0
@@ -510,16 +580,39 @@ register_host() {
 	fi || die "registrazione fallita: il messaggio sopra dice cosa fare (il token non è consumato su 400/403)"
 }
 
+# Scrive un'unità (contenuto sullo stdin) in modo atomico.
+write_unit() {
+	cat >"$MT_UNIT_DIR/$1.new"
+	chmod 0644 "$MT_UNIT_DIR/$1.new"
+	mv -f "$MT_UNIT_DIR/$1.new" "$MT_UNIT_DIR/$1"
+}
+
 install_service() {
-	msg "Installo il servizio $MT_UNIT_NAME"
+	msg "Installo il servizio $MT_UNIT_NAME e le unità dell'aggiornamento automatico"
+	if [ "$MT_ROLLBACK_AFTER" != 5min ]; then
+		msg "ATTENZIONE: MT_ROLLBACK_AFTER=$MT_ROLLBACK_AFTER, attesa del ritorno diversa dai 5 minuti: solo per i banchi di prova."
+	fi
 	if [ "$MT_DRY_RUN" = yes ]; then
-		render_unit "$MT_USER" "$MT_HOME" "$MT_SERVER" | sed 's/^/  [dry-run] /' >&2
+		{
+			render_unit "$MT_USER" "$MT_HOME" "$MT_SERVER"
+			render_updater_path
+			render_updater_service
+			render_rollback_timer "$MT_ROLLBACK_AFTER"
+			render_rollback_service
+		} | sed 's/^/  [dry-run] /' >&2
 		return 0
 	fi
-	render_unit "$MT_USER" "$MT_HOME" "$MT_SERVER" >"$MT_UNIT.new"
-	chmod 0644 "$MT_UNIT.new"
-	mv -f "$MT_UNIT.new" "$MT_UNIT"
+	render_unit "$MT_USER" "$MT_HOME" "$MT_SERVER" | write_unit "$MT_UNIT_NAME.service"
+	# Un'installazione su un host dove le unità esistono già (aggiornamento manuale) le riscrive.
+	render_updater_path | write_unit "$MT_UPDATER_PATH"
+	render_updater_service | write_unit "$MT_UPDATER_SERVICE"
+	render_rollback_timer "$MT_ROLLBACK_AFTER" | write_unit "$MT_ROLLBACK_TIMER"
+	render_rollback_service | write_unit "$MT_ROLLBACK_SERVICE"
 	systemctl daemon-reload
+	# Un ritorno armato da un aggiornamento precedente non deve scattare su questa installazione.
+	systemctl stop "$MT_ROLLBACK_TIMER" >/dev/null 2>&1 || true
+	rm -f "$MT_BIN.prev"
+	systemctl enable --now "$MT_UPDATER_PATH" >/dev/null 2>&1 || die "l'unità $MT_UPDATER_PATH non si abilita"
 	# enable --now non riavvia un servizio già attivo: dopo un aggiornamento girerebbe ancora il binario
 	# vecchio fino al riavvio della macchina. Il riavvio è sempre esplicito; le sessioni tmux restano
 	# vive (KillMode=process, D4).
@@ -543,22 +636,31 @@ summary() {
 	msg "  utente:          $MT_USER"
 	msg "  aggiornamenti:   $MT_AUTO_UPDATE   catalogo: $MT_CATALOG   ($MT_CONF)"
 	msg "  servizio:        systemctl status $MT_UNIT_NAME    log: journalctl -u $MT_UNIT_NAME -f"
+	msg "  aggiornamenti:   unità $MT_UPDATER_PATH (updater root) e $MT_ROLLBACK_TIMER (ritorno dopo $MT_ROLLBACK_AFTER)"
 	msg "  disinstallare:   sh install.sh --uninstall   (poi revoca l'host dalla UI)"
 }
 
 uninstall() {
 	require_root
-	msg "Rimuovo il servizio e il binario (l'host resta registrato: revocalo dalla UI di MonsterTerminal)"
+	msg "Rimuovo il servizio, le unità dell'aggiornamento e il binario (l'host resta registrato: revocalo dalla UI di MonsterTerminal)"
+	# Prima l'updater e il ritorno, poi il servizio: nessuna unità deve ripartire mentre si smonta.
+	for u in "$MT_UPDATER_PATH" "$MT_ROLLBACK_TIMER" "$MT_UPDATER_SERVICE" "$MT_ROLLBACK_SERVICE"; do
+		if [ -f "$MT_UNIT_DIR/$u" ]; then
+			run systemctl disable --now "$u" >/dev/null 2>&1 || true
+			run rm -f "$MT_UNIT_DIR/$u"
+		fi
+	done
 	if [ -f "$MT_UNIT" ]; then
 		run systemctl disable --now "$MT_UNIT_NAME"
 		run rm -f "$MT_UNIT"
-		run systemctl daemon-reload
 	fi
-	run rm -f "$MT_BIN"
+	run systemctl daemon-reload
+	run rm -f "$MT_BIN" "$MT_BIN.prev" "$MT_BIN.new"
 	run rm -rf "$MT_ETC"
 	if [ "$MT_PURGE" = yes ]; then
 		run rm -rf "$MT_STATE"
 	else
+		run rm -rf "$MT_STATE/update" "$MT_STATE/updater"
 		msg "Stato e token restano in $MT_STATE (--purge per rimuoverli)"
 	fi
 	# L'utente non si tocca: lo script non sa se l'ha creato lui o era del cliente (--user), e con

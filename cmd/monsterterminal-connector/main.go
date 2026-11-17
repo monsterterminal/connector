@@ -8,6 +8,12 @@
 //	monsterterminal-connector run [-config FILE]    si collega e resta collegato; legge le impostazioni
 //	                                                del cliente da /etc/monsterterminal/connector.conf
 //	monsterterminal-connector version
+//	monsterterminal-connector apply-update -state-dir DIR   (root, dall'unità updater: installa
+//	                                                ciò che il connettore ha preparato, dopo
+//	                                                averlo riverificato da sé; ADR 0438 D3)
+//	monsterterminal-connector rollback-check -state-dir DIR (root, dal timer, col binario .prev:
+//	                                                ripristina la versione precedente se la nuova
+//	                                                non si è collegata)
 //
 // Il token di installazione non si passa mai come argomento: comparirebbe nell'elenco dei processi.
 //
@@ -33,6 +39,11 @@ const devVersion = "0.1.1-dev"
 
 // version si imposta in compilazione con -ldflags "-X main.version=…".
 var version = devVersion
+
+// bancoBrokenHello si imposta SOLO nei banchi di prova con -ldflags "-X main.bancoBrokenHello=1":
+// run esce prima di collegarsi, così il timer di ritorno (ADR 0438 D3 punto 4) trova un binario che
+// non arriva mai a welcome. Un rilascio vero lo lascia vuoto: release.yml non lo imposta.
+var bancoBrokenHello = ""
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
