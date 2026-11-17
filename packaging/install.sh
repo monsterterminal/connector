@@ -40,9 +40,13 @@ MT_UPDATER_PATH=$MT_UNIT_NAME-updater.path
 MT_UPDATER_SERVICE=$MT_UNIT_NAME-updater.service
 MT_ROLLBACK_TIMER=$MT_UNIT_NAME-rollback.timer
 MT_ROLLBACK_SERVICE=$MT_UNIT_NAME-rollback.service
+# La cartella dell'updater sta FUORI dall'albero dell'utente del connettore (ADR 0438 A1): root 0700,
+# accanto a $MT_STATE e non sotto, così chi scrive in $MT_STATE non può scambiarla.
+MT_UPDATER_DIR=$MT_STATE-updater
 # Attesa del ritorno (spec §1.10 punto 6): 5 minuti. MT_ROLLBACK_AFTER la accorcia SOLO nei banchi di
-# prova (per esempio 20s): un valore in produzione sarebbe un errore, non un'opzione.
+# prova (per esempio 20s) e solo insieme a MT_BANCO=1: senza, lo script si ferma (parse_args).
 MT_ROLLBACK_AFTER=${MT_ROLLBACK_AFTER:-5min}
+MT_BANCO=${MT_BANCO:-}
 MT_DEFAULT_USER=monsterterminal
 MT_DEFAULT_SERVER=https://connect.monsterterminal.com
 MT_OS_RELEASE=/etc/os-release
@@ -221,6 +225,9 @@ parse_args() {
 	case "$MT_VERSION" in
 	@*) [ "$MT_UNINSTALL" = yes ] || usage_die "questo script non è un rilascio: indica --version X.Y.Z" ;;
 	esac
+	if [ "$MT_ROLLBACK_AFTER" != 5min ] && [ "$MT_BANCO" != 1 ]; then
+		die "MT_ROLLBACK_AFTER=$MT_ROLLBACK_AFTER è ammesso solo nei banchi di prova (serve anche MT_BANCO=1): in produzione il ritorno aspetta 5 minuti"
+	fi
 }
 
 # La unit systemd. Nessun token nell'ambiente: il connettore legge il file 0600 nella cartella di stato.
@@ -283,7 +290,8 @@ render_updater_service() {
 		"" \
 		"[Service]" \
 		"Type=oneshot" \
-		"ExecStart=$MT_BIN apply-update -state-dir $MT_STATE" \
+		"TimeoutStartSec=10min" \
+		"ExecStart=$MT_BIN apply-update -state-dir $MT_STATE -config $MT_CONF" \
 		"UMask=0077"
 }
 
@@ -310,7 +318,8 @@ render_rollback_service() {
 		"" \
 		"[Service]" \
 		"Type=oneshot" \
-		"ExecStart=$MT_BIN.prev rollback-check -state-dir $MT_STATE" \
+		"TimeoutStartSec=2min" \
+		"ExecStart=$MT_BIN.prev rollback-check -state-dir $MT_STATE -config $MT_CONF" \
 		"UMask=0077"
 }
 
@@ -546,8 +555,10 @@ install_files() {
 	msg "Installo $MT_BIN e le cartelle"
 	run install -d -m 0755 -o root -g root "$MT_ETC"
 	run install -d -m 0700 -o "$MT_USER" -g "$MT_USER" "$MT_STATE"
-	# La cassetta delle lettere dell'aggiornamento è del connettore; updater/ la crea l'updater (root).
+	# La cassetta delle lettere dell'aggiornamento è del connettore; la cartella dell'updater è di
+	# root, accanto e non sotto (ADR 0438 A1).
 	run install -d -m 0700 -o "$MT_USER" -g "$MT_USER" "$MT_STATE/update"
+	run install -d -m 0700 -o root -g root "$MT_UPDATER_DIR"
 	if [ "$MT_DRY_RUN" = yes ]; then
 		msg "  [dry-run] install -m 0755 $MT_ASSET $MT_BIN"
 		return 0
@@ -609,9 +620,10 @@ install_service() {
 	render_rollback_timer "$MT_ROLLBACK_AFTER" | write_unit "$MT_ROLLBACK_TIMER"
 	render_rollback_service | write_unit "$MT_ROLLBACK_SERVICE"
 	systemctl daemon-reload
-	# Un ritorno armato da un aggiornamento precedente non deve scattare su questa installazione.
+	# Un ritorno armato da un aggiornamento precedente non deve scattare su questa installazione, e un
+	# aggiornamento rimasto a metà non deve confondere il connettore nuovo.
 	systemctl stop "$MT_ROLLBACK_TIMER" >/dev/null 2>&1 || true
-	rm -f "$MT_BIN.prev"
+	rm -f "$MT_BIN.prev" "$MT_UPDATER_DIR/pending.json" "$MT_STATE/update/applied.json"
 	systemctl enable --now "$MT_UPDATER_PATH" >/dev/null 2>&1 || die "l'unità $MT_UPDATER_PATH non si abilita"
 	# enable --now non riavvia un servizio già attivo: dopo un aggiornamento girerebbe ancora il binario
 	# vecchio fino al riavvio della macchina. Il riavvio è sempre esplicito; le sessioni tmux restano
@@ -636,7 +648,7 @@ summary() {
 	msg "  utente:          $MT_USER"
 	msg "  aggiornamenti:   $MT_AUTO_UPDATE   catalogo: $MT_CATALOG   ($MT_CONF)"
 	msg "  servizio:        systemctl status $MT_UNIT_NAME    log: journalctl -u $MT_UNIT_NAME -f"
-	msg "  aggiornamenti:   unità $MT_UPDATER_PATH (updater root) e $MT_ROLLBACK_TIMER (ritorno dopo $MT_ROLLBACK_AFTER)"
+	msg "  aggiornamenti:   unità $MT_UPDATER_PATH (updater root, $MT_UPDATER_DIR) e $MT_ROLLBACK_TIMER (ritorno dopo $MT_ROLLBACK_AFTER)"
 	msg "  disinstallare:   sh install.sh --uninstall   (poi revoca l'host dalla UI)"
 }
 
@@ -656,11 +668,11 @@ uninstall() {
 	fi
 	run systemctl daemon-reload
 	run rm -f "$MT_BIN" "$MT_BIN.prev" "$MT_BIN.new"
-	run rm -rf "$MT_ETC"
+	run rm -rf "$MT_ETC" "$MT_UPDATER_DIR"
 	if [ "$MT_PURGE" = yes ]; then
 		run rm -rf "$MT_STATE"
 	else
-		run rm -rf "$MT_STATE/update" "$MT_STATE/updater"
+		run rm -rf "$MT_STATE/update"
 		msg "Stato e token restano in $MT_STATE (--purge per rimuoverli)"
 	fi
 	# L'utente non si tocca: lo script non sa se l'ha creato lui o era del cliente (--user), e con

@@ -46,7 +46,7 @@ BANCO_ASSETS=${BANCO_ASSETS:-}
 GO_IMAGE=${BANCO_GO_IMAGE:-golang:1.27}
 GO_CACHE=${BANCO_GO_CACHE:-$HOME/.cache/go-banco}
 CGROUPNS=${BANCO_CGROUPNS:-private}
-ROLLBACK_AFTER=${BANCO_ROLLBACK_AFTER:-20s}
+ROLLBACK_AFTER=${BANCO_ROLLBACK_AFTER:-45s}
 NGINX_IMAGE=nginx:1.27-alpine
 
 NET=mt-banco
@@ -375,7 +375,7 @@ run_install() {
 	shift 2
 	local envf="$STATUS/env.$$"
 	# MT_ROLLBACK_AFTER: l'attesa del ritorno scritta nel timer, accorciata SOLO qui (install.sh lo dice)
-	(umask 077 && printf 'MONSTERTERMINAL_INSTALL_TOKEN=%s\nMT_ROLLBACK_AFTER=%s\n' "$tok" "$ROLLBACK_AFTER" >"$envf")
+	(umask 077 && printf 'MONSTERTERMINAL_INSTALL_TOKEN=%s\nMT_ROLLBACK_AFTER=%s\nMT_BANCO=1\n' "$tok" "$ROLLBACK_AFTER" >"$envf")
 	local rc=0
 	docker exec --env-file "$envf" "$HOST_C" sh -c \
 		"curl -fsSL --proto '=https' --tlsv1.2 https://releases.banco/install.sh | sh -s -- --server $SERVER_URL --releases-url $RELEASES_URL $*" \
@@ -737,7 +737,7 @@ require_update_bench() {
 }
 mailbox_clean() {
 	# la cassetta delle lettere non deve trattenere niente dopo un esito
-	hx_sh '! test -e /var/lib/monsterterminal/update/apply.request && ! test -e /var/lib/monsterterminal/update/applied.json && ! test -e /var/lib/monsterterminal/update/apply.rejected && ! test -e /var/lib/monsterterminal/update/rolled-back.json && ! test -e /var/lib/monsterterminal/updater/pending.json'
+	hx_sh '! test -e /var/lib/monsterterminal/update/apply.request && ! test -e /var/lib/monsterterminal/update/applied.json && ! test -e /var/lib/monsterterminal/update/apply.rejected && ! test -e /var/lib/monsterterminal/update/rolled-back.json && ! test -e /var/lib/monsterterminal-updater/pending.json'
 }
 
 cmd_update() {
@@ -770,14 +770,15 @@ cmd_update() {
 	assert "binario sostituito con l'asset v$UPD1 entro 90 s (download, updater root, rename)" wait_binary "$sha1" 90
 	assert ".prev presente = il binario di prima (v$BANCO_VERSION)" hx_sh "test \"\$(sha256sum /usr/local/bin/monsterterminal-connector.prev | cut -d' ' -f1)\" = $sha0"
 	assert "binario installato root 0755" hx_sh 'test "$(stat -c "%a %U" /usr/local/bin/monsterterminal-connector)" = "755 root"'
-	assert "cartella updater/ root 0700" hx_sh 'test "$(stat -c "%a %U" /var/lib/monsterterminal/updater)" = "700 root"'
+	assert "cartella dell'updater /var/lib/monsterterminal-updater root 0700, FUORI dall'albero dell'utente (ADR 0438 A1)" hx_sh 'test "$(stat -c "%a %U" /var/lib/monsterterminal-updater)" = "700 root" && ! test -e /var/lib/monsterterminal/updater'
 	assert "il binario scaricato in update/ non è eseguibile" hx_sh 'f=/var/lib/monsterterminal/update/binary; ! test -e "$f" || test "$(stat -c %a "$f")" = 600'
 	assert "download dal prefisso vero delle release (github.com alias del banco)" sh -c "docker logs $REL_C 2>&1 | grep -q 'GET /monsterterminal/connector/releases/download/v$UPD1/'"
-	assert "update.result ok v$UPD1 entro 60 s (dal connettore nuovo, dopo welcome)" wait_result "$UPD1" ok "" 60
+	assert "nessun marcatore di collegamento subito dopo welcome (finestra di 30 s, punto 7 della revisione)" hx_sh '! test -e /var/lib/monsterterminal/update/connected-'"$UPD1"
+	assert "update.result ok v$UPD1 entro 90 s (dal connettore nuovo, dopo welcome E 30 s di connessione)" wait_result "$UPD1" ok "" 90
 	assert "«version» del binario = $UPD1" hx_sh "test \"\$(/usr/local/bin/monsterterminal-connector version)\" = $UPD1"
 	assert "servizio attivo con un MainPID nuovo" hx_sh "test \"\$(systemctl is-active monsterterminal-connector)\" = active && test \"\$(systemctl show -p MainPID --value monsterterminal-connector)\" != $pid_before"
 	assert "connector.restarted con reason update ($BANCO_VERSION → $UPD1) entro 30 s" wait_restart "$BANCO_VERSION" "$UPD1" update 30
-	assert ".prev rimosso dal timer di ritorno entro 60 s (marcatore connected-$UPD1 trovato)" wait_gone /usr/local/bin/monsterterminal-connector.prev 60
+	assert ".prev rimosso dal timer di ritorno entro 90 s (marcatore connected-$UPD1 trovato)" wait_gone /usr/local/bin/monsterterminal-connector.prev 90
 	assert "pending.json, applied.json, apply.request assenti dopo il disarmo" mailbox_clean
 	assert "la sessione tmux creata prima è ancora viva" tmux_mt has-session -t prima-del-rilascio
 	assert "il servizio gira ancora come monsterterminal" hx_sh 'test "$(ps -o user= -p "$(systemctl show -p MainPID --value monsterterminal-connector)")" = monsterterminal'
@@ -894,24 +895,33 @@ cmd_update_negative() {
 	assert "update.result skipped tenant-switch" wait_result 0.0.5-banco skipped tenant-switch 30
 	dl_before=$(binary_downloads)
 
-	step "N7 — manifest con security:true ignora l'interruttore del backend: v$UPD3 si installa davvero"
-	push_manifest "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" "$KEYS/updates.key"
-	assert "binario sostituito con v$UPD3 entro 90 s" wait_binary "$sha3" 90
-	assert "update.result ok v$UPD3 entro 60 s" wait_result "$UPD3" ok "" 60
-	assert ".prev rimosso entro 60 s" wait_gone /usr/local/bin/monsterterminal-connector.prev 60
-
-	step "N8 — auto_update=no nel file locale dell'host vince anche sulla sicurezza ⇒ skipped host-config, nessun download"
+	step "N7 — auto_update=no nel file dell'host vince su tutto (D6 «assoluto»), anche sull'updater: un pacchetto IN REGOLA (v$UPD3 firmato, sha giusto) messo in update/ con apply.request è rifiutato da root con host-config; e un manifest di sicurezza spinto dal backend è skipped host-config senza download"
 	hx sed -i 's/^auto_update=yes$/auto_update=no/' /etc/monsterterminal/connector.conf
 	hx systemctl restart monsterterminal-connector
 	assert "il connettore riparte e dichiara autoUpdateEnabled=false" sh -c "i=0; while [ \$i -lt 30 ]; do grep -q '\"autoUpdateEnabled\": false' '$STATUS/status.json' && exit 0; i=\$((i+1)); sleep 1; done; exit 1"
+	before=$(snapshot_host)
+	docker cp "$DIST/$(asset_name "$UPD3")" "$HOST_C:/tmp/mt-asset3"
+	hx chmod 0644 /tmp/mt-asset3
+	sigf=$STATUS/manifests/upd3.sig
+	openssl pkeyutl -sign -inkey "$KEYS/updates.key" -rawin -in "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" -out "$sigf"
+	user_plants "$UPD3" "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" "$sigf" /tmp/mt-asset3
+	assert "apply.rejected con reason host-config entro 30 s (l'updater legge il file dell'host da sé)" hx_sh 'i=0; while [ $i -lt 30 ]; do grep -q "host-config" /var/lib/monsterterminal/update/apply.rejected 2>/dev/null && exit 0; i=$((i+1)); sleep 1; done; exit 1'
+	assert "update.result skipped host-config v$UPD3 riportato dal connettore entro 60 s" wait_result "$UPD3" skipped host-config 60
+	assert "binario, conf, unit e token intatti; nessun .prev" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev"
 	dl_before=$(binary_downloads)
 	push_manifest "$(fake_manifest 0.0.4-banco "" '"security":true,')" "$KEYS/updates.key"
-	assert "update.result skipped host-config" wait_result 0.0.4-banco skipped host-config 30
+	assert "manifest di sicurezza spinto: update.result skipped host-config, nessun download" wait_result 0.0.4-banco skipped host-config 30
 	assert "nessun download" test "$(binary_downloads)" = "$dl_before"
 	hx sed -i 's/^auto_update=no$/auto_update=yes/' /etc/monsterterminal/connector.conf
-	backend_switch assente
 	hx systemctl restart monsterterminal-connector
 	assert "il connettore riparte con auto_update=yes" sh -c "i=0; while [ \$i -lt 30 ]; do grep -q '\"autoUpdateEnabled\": true' '$STATUS/status.json' && exit 0; i=\$((i+1)); sleep 1; done; exit 1"
+
+	step "N8 — manifest con security:true ignora l'interruttore del backend (ancora spento): v$UPD3 si installa davvero"
+	push_manifest "$GHDIR/v$UPD3/update-manifest-linux-$ARCH.json" "$KEYS/updates.key"
+	assert "binario sostituito con v$UPD3 entro 90 s" wait_binary "$sha3" 90
+	assert "update.result ok v$UPD3 entro 90 s (dopo la finestra di collegamento)" wait_result "$UPD3" ok "" 90
+	assert ".prev rimosso entro 60 s" wait_gone /usr/local/bin/monsterterminal-connector.prev 60
+	backend_switch assente
 
 	step "N9 — l'utente del connettore mette in update/ un binario NON firmato (firma di zeri) con un apply.request falso ⇒ l'updater scrive apply.rejected e NON installa (decisione BOSS 2026-11-17)"
 	before=$(snapshot_host)
@@ -938,7 +948,7 @@ cmd_update_negative() {
 	openssl pkeyutl -sign -inkey "$KEYS/updates.key" -rawin -in "$mf" -out "$sigf"
 	user_plants 0.1.2-banco "$mf" "$sigf" /usr/local/bin/monsterterminal-connector symlink
 	assert "update.result failed download-failed v0.1.2-banco entro 60 s (symlink non seguito)" wait_result 0.1.2-banco failed download-failed 60
-	assert "macchina intatta, nessun .prev, nessuna copia in updater/" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev && ! docker exec $HOST_C test -e /var/lib/monsterterminal/updater/binary"
+	assert "macchina intatta, nessun .prev, nessuna copia nella cartella dell'updater" sh -c "test \"$(snapshot_host)\" = \"$before\" && ! docker exec $HOST_C test -e /usr/local/bin/monsterterminal-connector.prev && ! docker exec $HOST_C test -e /var/lib/monsterterminal-updater/binary"
 	assert "cassetta pulita e nessuna richiesta in attesa" mailbox_clean
 	assert "servizio attivo, «version» = $UPD3" hx_sh "test \"\$(systemctl is-active monsterterminal-connector)\" = active && test \"\$(/usr/local/bin/monsterterminal-connector version)\" = $UPD3"
 	msg "   update.result finora: $(results_json)"

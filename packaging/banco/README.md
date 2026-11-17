@@ -39,7 +39,7 @@ stampa le asserzioni (`ok`/`FAIL`), esce con 1 se una è rossa, e lascia le tras
 Variabili: `BANCO_HOME` (default `~/mt-banco`), `BANCO_VERSION` (`0.0.0-banco`), `BANCO_ASSETS`,
 `BANCO_GO_IMAGE` (`golang:1.27`), `BANCO_GO_CACHE` (`~/.cache/go-banco`), `BANCO_CGROUPNS`
 (`private`, oppure `host` che monta anche `/sys/fs/cgroup` della macchina), `BANCO_ROLLBACK_AFTER`
-(`20s`: l'attesa del ritorno che `install.sh` scrive nel timer leggendo `MT_ROLLBACK_AFTER`, solo banchi).
+(`45s`: l'attesa del ritorno che `install.sh` scrive nel timer leggendo `MT_ROLLBACK_AFTER`, solo banchi; oltre i 30 s della finestra di collegamento).
 
 In CI (`.github/workflows/ci.yml`, job «banco di prova») gira tutta la sequenza, `update`, `rollback`
 e `update-negative` compresi, su un runner GitHub con Docker: ~5 minuti a cache fredda.
@@ -82,15 +82,17 @@ Il backend finto si comanda con file JSON in `~/mt-banco/status/cmd/` (`mt-fakes
 consumati ogni 250 ms): `push` (update.available a tutti), `offer` (risposta ai prossimi
 `update.check`), `auto-update` (l'interruttore del backend, anche in `config.update` subito),
 `session.open`. Lo status-file porta `updateChecks`, `updateNones`, `updateResults` e `restarts`.
-`install` scrive nel timer di ritorno `OnActiveSec=20s` (`MT_ROLLBACK_AFTER` via `docker exec
---env-file`), invece dei 5 minuti di produzione.
+`install` scrive nel timer di ritorno `OnActiveSec=45s` (`MT_ROLLBACK_AFTER` più `MT_BANCO=1` via
+`docker exec --env-file`), invece dei 5 minuti di produzione; la cartella dell'updater è
+`/var/lib/monsterterminal-updater` (ADR 0438 A1). L'`ok` della versione nuova arriva dopo 30 s di
+connessione mantenuta.
 
 | Scenario | Nel banco | Asserzioni |
 |---|---|---|
-| `update` (D3, D4) | il connettore manda `update.check` dopo welcome e riceve `update.none`; il backend finto apre una sessione tmux **attraverso il connettore** (`session.open`) e poi spinge `update.available` v0.0.1-banco | `updateChecks ≥ 1`, `updateNones ≥ 1`, `auto-update` fra le capacità; unità path attiva, timer con `OnActiveSec=20s`; binario sostituito dall'asset v0.0.1 (sha256) con `.prev` = il binario di prima, root 0755, `updater/` root 0700, download dal prefisso vero di GitHub; `update.result ok`, `version` = 0.0.1-banco, MainPID nuovo, `connector.restarted` `update`; `.prev` tolto dal timer e cassetta pulita; la sessione tmux è viva e il suo server sta nel cgroup del servizio; journal dell'updater «verificato», del ritorno «disarmo», senza token |
-| `rollback` (D3 punto 4) | spinge v0.0.2-banco (hello rotto) | binario sostituito, `.prev` = v0.0.1, timer armato, journal «hello volutamente rotto»; dopo 20 s il binario torna v0.0.1 (rename di `.prev`), `update.result rolled-back` con `no-welcome`, `connector.restarted` `rollback`, servizio attivo, cassetta pulita, sessione tmux ancora viva |
+| `update` (D3, D4) | il connettore manda `update.check` dopo welcome e riceve `update.none`; il backend finto apre una sessione tmux **attraverso il connettore** (`session.open`) e poi spinge `update.available` v0.0.1-banco | `updateChecks ≥ 1`, `updateNones ≥ 1`, `auto-update` fra le capacità; unità path attiva, timer con `OnActiveSec=45s`; binario sostituito dall'asset v0.0.1 (sha256) con `.prev` = il binario di prima, root 0755, `updater/` root 0700, download dal prefisso vero di GitHub; `update.result ok`, `version` = 0.0.1-banco, MainPID nuovo, `connector.restarted` `update`; `.prev` tolto dal timer e cassetta pulita; la sessione tmux è viva e il suo server sta nel cgroup del servizio; journal dell'updater «verificato», del ritorno «disarmo», senza token |
+| `rollback` (D3 punto 4) | spinge v0.0.2-banco (hello rotto) | binario sostituito, `.prev` = v0.0.1, timer armato, journal «hello volutamente rotto»; dopo 45 s il binario torna v0.0.1 (rename di `.prev`), `update.result rolled-back` con `no-welcome`, `connector.restarted` `rollback`, servizio attivo, cassetta pulita, sessione tmux ancora viva |
 | `update-negative` N1-N5 (D3 punto 1) | firma di un'altra chiave; firma con la chiave delle ricette; downgrade e stessa versione; URL fuori dal repository; sha256 diverso | `update.result failed` con `bad-signature`, `bad-signature`, `not-newer` (×2), `bad-url` senza nessun download; `sha256-mismatch` con un download e nessun `apply.request` |
-| N6-N8 (D6) | `auto-update false` dal backend poi un manifest; un manifest `security:true` (v0.0.3-banco); `auto_update=no` nel file dell'host e un manifest di sicurezza | `skipped tenant-switch`; v0.0.3 **installata** (`ok`) nonostante l'interruttore del backend; `skipped host-config` senza download, poi ripristino |
+| N6-N8 (D6) | `auto-update false` dal backend poi un manifest; `auto_update=no` nel file dell'host con un pacchetto **in regola** (v0.0.3 firmato) messo a mano in `update/` con `apply.request` e poi un manifest di sicurezza spinto; infine un manifest `security:true` (v0.0.3-banco) con l'interruttore del backend ancora spento | `skipped tenant-switch`; l'**updater** rifiuta con `apply.rejected host-config` (riportato `skipped host-config`), il manifest spinto è `skipped host-config` senza download; v0.0.3 **installata** (`ok`) nonostante l'interruttore del backend |
 | N9, N9b, N10 (D3 punto 2, decisione BOSS 2026-11-17) | l'utente `monsterterminal` mette in `update/` un binario (`/bin/true`) con manifest e firma di zeri, poi con firma della chiave delle ricette, poi un **symlink** al binario di root con un manifest firmato sullo sha di quel file, sempre con `apply.request` | l'updater scrive `apply.rejected` (`bad-signature`, `bad-signature`, `download-failed`), il connettore lo riporta come `update.result failed`, binario/conf/unit/token intatti, nessun `.prev`, nessuna copia in `updater/`, journal «rifiutato» |
 
 Resta manuale (non nel banco): il tetto di 64 MiB del download e della copia (coperto dai test unit
@@ -170,5 +172,5 @@ Sul VPS di sviluppo (8 vCPU, con i runner CI a carico 3-4): il primo `up` paga i
 `golang:1.27`, `nginx:1.27-alpine`, `ubuntu:24.04`, `alpine:3.20` e il download dei due moduli Go
 (~2-3 minuti); a cache calda **l'intero giro `all` dura ~20 secondi** (build inclusa). `down` lascia
 la cache Go (~340 MB) e le immagini di base; `down --images` toglie anche quelle. Con l'aggiornamento
-automatico il giro `all` dura ~3 minuti: `rollback` aspetta i 20 s del timer più i riavvii, e
+automatico il giro `all` dura ~3 minuti: `rollback` aspetta i 45 s del timer più i riavvii, e
 `update-negative` installa davvero v0.0.3-banco.

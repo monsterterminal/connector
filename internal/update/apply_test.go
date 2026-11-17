@@ -1,6 +1,7 @@
-// Test dell'updater root (ADR 0438 D3 punti 2-4; decisione BOSS 2026-11-17: l'updater NON si fida
-// di ciò che il connettore ha preparato). Niente root e niente systemd qui: il binario installato è
-// un file in una cartella temporanea, systemctl è una funzione che registra le chiamate.
+// Test dell'updater root (ADR 0438 D3 punti 2-4, A1; decisione BOSS 2026-11-17: l'updater NON si fida
+// di ciò che il connettore ha preparato; revisione di sicurezza 2026-11-17). Niente root e niente
+// systemd qui: il binario installato è un file in una cartella temporanea, systemctl è una funzione
+// che registra le chiamate, la cartella dell'updater sta ACCANTO a quella di stato.
 package update
 
 import (
@@ -11,23 +12,24 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/monsterterminal/connector/internal/protocol"
 )
 
 type bench struct {
-	state, updateDir, updaterDir, bin string
-	pub                               ed25519.PublicKey
-	priv                              ed25519.PrivateKey
-	calls                             []string
+	base, state, updateDir, updaterDir, bin, conf string
+	pub                                           ed25519.PublicKey
+	priv                                          ed25519.PrivateKey
+	calls                                         []string
 }
 
 func newBench(t *testing.T) *bench {
 	t.Helper()
 	root := t.TempDir()
-	b := &bench{state: filepath.Join(root, "state"), bin: filepath.Join(root, "bin", "monsterterminal-connector")}
+	b := &bench{base: root, state: filepath.Join(root, "state"), bin: filepath.Join(root, "bin", "monsterterminal-connector"), conf: filepath.Join(root, "connector.conf")}
 	b.updateDir = filepath.Join(b.state, UpdateSubdir)
-	b.updaterDir = filepath.Join(b.state, UpdaterSubdir)
+	b.updaterDir = UpdaterDirFor(b.state)
 	if err := os.MkdirAll(b.updateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -43,15 +45,27 @@ func newBench(t *testing.T) *bench {
 
 func (b *bench) cfg() ApplyConfig {
 	return ApplyConfig{
-		StateDir:  b.state,
-		Binary:    b.bin,
-		Running:   "0.6.1",
-		Platform:  Platform{OS: "linux", Arch: "amd64", Protocol: 1, Version: "0.6.1"},
-		Key:       b.pub,
-		Systemctl: func(args ...string) error { b.calls = append(b.calls, strings.Join(args, " ")); return nil },
-		UID:       os.Getuid(),
-		Logger:    slog.New(slog.NewTextHandler(os.Stderr, nil)),
+		StateDir:    b.state,
+		TrustedBase: b.base,
+		ConfigFile:  b.conf,
+		Binary:      b.bin,
+		Running:     "0.6.1",
+		Platform:    Platform{OS: "linux", Arch: "amd64", Protocol: 1, Version: "0.6.1"},
+		Key:         b.pub,
+		Systemctl:   func(args ...string) error { b.calls = append(b.calls, strings.Join(args, " ")); return nil },
+		UID:         os.Getuid(),
+		Logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
+}
+
+func (b *bench) mailbox(t *testing.T) *Mailbox {
+	t.Helper()
+	mb, err := OpenMailbox(b.updateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mb.Close() })
+	return mb
 }
 
 // prepare lascia nella cassetta ciò che il connettore avrebbe preparato: binario, manifest canonico,
@@ -71,14 +85,15 @@ func (b *bench) prepare(t *testing.T, body []byte, m protocol.UpdateManifest, si
 	if err := os.WriteFile(filepath.Join(b.updateDir, FileBinary), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteRequest(b.updateDir, canon, sig, m.Version); err != nil {
+	mb := b.mailbox(t)
+	if err := mb.WriteRequest(canon, sig, m.Version); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func (b *bench) rejected(t *testing.T) Outcome {
 	t.Helper()
-	o, ok, err := ReadOutcome(b.updateDir, FileApplyRejected)
+	o, ok, err := b.mailbox(t).ReadOutcome(FileApplyRejected)
 	if !ok || err != nil {
 		t.Fatalf("apply.rejected assente o illeggibile: %v %v", ok, err)
 	}
@@ -98,6 +113,20 @@ func (b *bench) noRequest(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(b.updateDir, FileApplyRequest)); !os.IsNotExist(err) {
 		t.Fatal("apply.request non tolto")
 	}
+}
+
+func (b *bench) pending(t *testing.T) (Pending, bool) {
+	t.Helper()
+	st, err := OpenStore(b.updaterDir, os.Getuid(), b.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	p, ok, err := st.ReadPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, ok
 }
 
 func newManifest(version string) protocol.UpdateManifest {
@@ -123,26 +152,26 @@ func TestApplyInstallaUnAggiornamentoVerificato(t *testing.T) {
 	if _, err := os.Lstat(b.bin + NewSuffix); !os.IsNotExist(err) {
 		t.Fatal(".new rimasto dopo la rinomina")
 	}
-	p, ok, err := ReadPending(b.updaterDir)
-	if !ok || err != nil || p.Version != "0.7.0" || p.PreviousVersion != "0.6.1" || p.At == "" {
-		t.Fatalf("pending.json: %+v %v %v", p, ok, err)
+	p, ok := b.pending(t)
+	if !ok || p.Version != "0.7.0" || p.PreviousVersion != "0.6.1" || p.At == "" {
+		t.Fatalf("pending.json: %+v %v", p, ok)
 	}
-	if a, ok, _ := ReadApplied(b.updateDir); !ok || a != p {
+	if a, ok, _ := b.mailbox(t).ReadApplied(); !ok || a != p {
 		t.Fatalf("applied.json: %+v %v (pending %+v)", a, ok, p)
 	}
-	if st, _ := os.Stat(b.updaterDir); st.Mode().Perm() != 0o700 {
-		t.Fatalf("updater/ modo %v", st.Mode())
+	if st, _ := os.Stat(b.updaterDir); st.Mode().Perm() != 0o700 || filepath.Dir(b.updaterDir) != filepath.Dir(b.state) {
+		t.Fatalf("cartella dell'updater %s modo %v: deve stare accanto a quella di stato, root 0700", b.updaterDir, st.Mode())
 	}
 	b.noRequest(t)
 	for _, n := range []string{FileBinary, FileManifest, FileSignature} {
 		if _, err := os.Lstat(filepath.Join(b.updaterDir, n)); !os.IsNotExist(err) {
-			t.Errorf("copia %s rimasta in updater/", n)
+			t.Errorf("copia %s rimasta nella cartella dell'updater", n)
 		}
 	}
 	if got := strings.Join(b.calls, ";"); got != "restart "+RollbackTimer+";restart "+ServiceName {
 		t.Fatalf("systemctl: %s", got)
 	}
-	if _, ok, _ := ReadOutcome(b.updateDir, FileApplyRejected); ok {
+	if _, ok, _ := b.mailbox(t).ReadOutcome(FileApplyRejected); ok {
 		t.Fatal("apply.rejected scritto su un'installazione riuscita")
 	}
 }
@@ -201,6 +230,14 @@ func TestApplyRifiutaCioCheNonEFirmato(t *testing.T) {
 		{"solo apply.request, nient'altro", func(b *bench) {
 			_ = os.WriteFile(filepath.Join(b.updateDir, FileApplyRequest), []byte("0.7.0\n"), 0o600)
 		}, ReasonDownloadFailed},
+		{"auto_update = no nel file dell'host (D6, assoluto): anche con tutto in regola", func(b *bench) {
+			b.prepare(t, body, newManifest("0.7.0"), nil)
+			_ = os.WriteFile(b.conf, []byte("auto_update=no\n"), 0o644)
+		}, ReasonHostConfig},
+		{"file dell'host illeggibile vale spento", func(b *bench) {
+			b.prepare(t, body, newManifest("0.7.0"), nil)
+			_ = os.WriteFile(b.conf, []byte("auto_updat=no\n"), 0o644)
+		}, ReasonHostConfig},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -220,7 +257,7 @@ func TestApplyRifiutaCioCheNonEFirmato(t *testing.T) {
 			if o := b.rejected(t); o.Reason != c.reason {
 				t.Fatalf("apply.rejected: %+v", o)
 			}
-			if _, ok, _ := ReadPending(b.updaterDir); ok {
+			if _, ok := b.pending(t); ok {
 				t.Fatal("pending.json scritto su un rifiuto")
 			}
 			b.noRequest(t)
@@ -237,7 +274,7 @@ func withSHA(m protocol.UpdateManifest, body []byte) protocol.UpdateManifest {
 }
 
 // Un symlink in update/ (verso un file di root, o verso il binario stesso) non si segue: la copia è
-// per contenuto e solo da file regolari (O_NOFOLLOW + Lstat + fstat).
+// per contenuto e solo da file regolari, dal descrittore della cartella.
 func TestApplyNonSegueSymlinkNellaCassetta(t *testing.T) {
 	for _, name := range []string{FileBinary, FileManifest, FileSignature} {
 		t.Run(name, func(t *testing.T) {
@@ -259,13 +296,12 @@ func TestApplyNonSegueSymlinkNellaCassetta(t *testing.T) {
 			if o := b.rejected(t); o.Reason != ReasonDownloadFailed {
 				t.Fatalf("apply.rejected: %+v", o)
 			}
-			// Il bersaglio non è stato copiato né toccato.
 			if got, _ := os.ReadFile(target); string(got) != "segreto" {
 				t.Fatal("bersaglio del symlink modificato")
 			}
 			for _, n := range []string{FileBinary, FileManifest, FileSignature} {
 				if got, err := os.ReadFile(filepath.Join(b.updaterDir, n)); err == nil && string(got) == "segreto" {
-					t.Fatalf("il contenuto del bersaglio è finito in updater/%s", n)
+					t.Fatalf("il contenuto del bersaglio è finito nella cartella dell'updater (%s)", n)
 				}
 			}
 			b.noRequest(t)
@@ -281,12 +317,67 @@ func TestApplyNonSegueSymlinkNellaCassetta(t *testing.T) {
 	}
 }
 
+// Una FIFO al posto del manifest non blocca l'updater (O_NONBLOCK + fstat): rifiuto in tempo breve.
+func TestApplyNonSiBloccaSuUnaFIFO(t *testing.T) {
+	for _, name := range []string{FileManifest, FileBinary} {
+		b := newBench(t)
+		b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
+		_ = os.Remove(filepath.Join(b.updateDir, name))
+		if err := syscall.Mkfifo(filepath.Join(b.updateDir, name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- Apply(b.cfg()) }()
+		select {
+		case err := <-done:
+			if ReasonOf(err, "") != ReasonDownloadFailed {
+				t.Fatalf("FIFO al posto di %s: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("l'updater si è bloccato su una FIFO al posto di %s", name)
+		}
+		b.binaryIs(t, "binario installato 0.6.1")
+		b.noRequest(t)
+	}
+}
+
+// La copia FINALE (quella che finisce in .new) ha il suo SHA-256 confrontato col manifest: un file
+// diverso da quello verificato non arriva mai al posto del binario (punto 1c della revisione).
+func TestInstallVerifiedConfrontaLaCopiaFinale(t *testing.T) {
+	src, _ := openStore(t)
+	dstDir, _, err := OpenDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstDir.Close()
+	good := []byte("binario verificato")
+	_ = src.writeExclusive(FileBinary, good, 0o700)
+	if err := installVerified(src.Dir, FileBinary, dstDir, "connector.new", shaOf(good)); err != nil {
+		t.Fatalf("copia buona rifiutata: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dstDir.Path, "connector.new")); string(got) != string(good) {
+		t.Fatalf("copia %q", got)
+	}
+	if st, _ := os.Stat(filepath.Join(dstDir.Path, "connector.new")); st.Mode().Perm() != 0o755 {
+		t.Fatalf("modo %v", st.Mode().Perm())
+	}
+	// Il contenuto cambia dopo la prima verifica (lo sha atteso è quello del file buono): rifiuto e
+	// nessun .new lasciato.
+	_ = src.writeExclusive(FileBinary, []byte("binario sostituito fra le due letture"), 0o700)
+	err = installVerified(src.Dir, FileBinary, dstDir, "connector.new", shaOf(good))
+	if ReasonOf(err, "") != ReasonSHA256Mismatch {
+		t.Fatalf("copia sostituita: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dstDir.Path, "connector.new")); !os.IsNotExist(err) {
+		t.Fatal(".new lasciato dopo il rifiuto")
+	}
+}
+
 func TestApplyRifiutaBinarioOltreIlTettoDiCopia(t *testing.T) {
 	b := newBench(t)
 	b.prepare(t, []byte("piccolo"), newManifest("0.7.0"), nil)
 	// Il tetto della copia è MaxBinaryBytes: si simula con un manifest oltre il suo (64 KiB).
-	big := make([]byte, MaxManifestBytes+1)
-	_ = os.WriteFile(filepath.Join(b.updateDir, FileManifest), big, 0o600)
+	_ = os.WriteFile(filepath.Join(b.updateDir, FileManifest), make([]byte, MaxManifestBytes+1), 0o600)
 	if err := Apply(b.cfg()); ReasonOf(err, "") != ReasonTooLarge {
 		t.Fatalf("manifest oltre il tetto: %v", err)
 	}
@@ -295,35 +386,51 @@ func TestApplyRifiutaBinarioOltreIlTettoDiCopia(t *testing.T) {
 	}
 }
 
-// La cartella root-only: creata 0700 dall'updater; se esiste con altri permessi ci si ferma.
+// La cartella dell'updater inutilizzabile (permessi larghi, symlink, antenato in mano ad altri,
+// altro proprietario): l'updater si ferma, ma scrive comunque apply.rejected (download-failed), così
+// il backend non resta «in corso» muto (punto 5 della revisione).
 func TestApplyCartellaDellUpdater(t *testing.T) {
-	b := newBench(t)
-	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
-	_ = os.MkdirAll(b.updaterDir, 0o755)
-	_ = os.Chmod(b.updaterDir, 0o755)
-	err := Apply(b.cfg())
-	if err == nil || !strings.Contains(err.Error(), "permessi") {
-		t.Fatalf("cartella con permessi larghi accettata: %v", err)
+	cases := map[string]func(b *bench) ApplyConfig{
+		"permessi larghi": func(b *bench) ApplyConfig {
+			_ = os.Mkdir(b.updaterDir, 0o755)
+			_ = os.Chmod(b.updaterDir, 0o755)
+			return b.cfg()
+		},
+		"symlink al suo posto": func(b *bench) ApplyConfig {
+			_ = os.Symlink(t.TempDir(), b.updaterDir)
+			return b.cfg()
+		},
+		"altro proprietario atteso": func(b *bench) ApplyConfig {
+			c := b.cfg()
+			c.UID = os.Getuid() + 1
+			return c
+		},
+		"antenato scrivibile da altri": func(b *bench) ApplyConfig {
+			loose := filepath.Join(b.base, "loose")
+			_ = os.Mkdir(loose, 0o777)
+			_ = os.Chmod(loose, 0o777)
+			c := b.cfg()
+			c.UpdaterDir = filepath.Join(loose, "state-updater")
+			return c
+		},
 	}
-	b.binaryIs(t, "binario installato 0.6.1")
-	if _, ok, _ := ReadOutcome(b.updateDir, FileApplyRejected); ok {
-		t.Fatal("apply.rejected scritto per un problema dell'updater stesso")
-	}
-	b.noRequest(t)
-	// Un symlink al posto della cartella.
-	b = newBench(t)
-	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
-	_ = os.Symlink(t.TempDir(), b.updaterDir)
-	if err := Apply(b.cfg()); err == nil || !strings.Contains(err.Error(), "non è una cartella") {
-		t.Fatalf("symlink al posto di updater/: %v", err)
-	}
-	// Un altro proprietario atteso.
-	b = newBench(t)
-	b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
-	cfg := b.cfg()
-	cfg.UID = os.Getuid() + 1
-	if err := Apply(cfg); err == nil || !strings.Contains(err.Error(), "appartiene") {
-		t.Fatalf("altro proprietario: %v", err)
+	for name, mk := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newBench(t)
+			b.prepare(t, []byte("binario nuovo 0.7.0"), newManifest("0.7.0"), nil)
+			err := Apply(mk(b))
+			if err == nil || ReasonOf(err, "") != ReasonDownloadFailed {
+				t.Fatalf("cartella dell'updater inutilizzabile accettata: %v", err)
+			}
+			b.binaryIs(t, "binario installato 0.6.1")
+			if o := b.rejected(t); o.Reason != ReasonDownloadFailed || o.Version != "0.7.0" {
+				t.Fatalf("apply.rejected: %+v", o)
+			}
+			b.noRequest(t)
+			if len(b.calls) != 0 {
+				t.Fatalf("systemctl: %v", b.calls)
+			}
+		})
 	}
 }
 
@@ -346,7 +453,10 @@ func TestApplySenzaTimerNonInstalla(t *testing.T) {
 	if _, err := os.Lstat(b.bin + NewSuffix); !os.IsNotExist(err) {
 		t.Fatal(".new rimasto")
 	}
-	if _, ok, _ := ReadPending(b.updaterDir); ok {
+	if _, err := os.Lstat(b.bin + PrevSuffix); !os.IsNotExist(err) {
+		t.Fatal(".prev rimasto")
+	}
+	if _, ok := b.pending(t); ok {
 		t.Fatal("pending.json rimasto")
 	}
 	if o := b.rejected(t); o.Reason != ReasonDownloadFailed {
@@ -354,9 +464,7 @@ func TestApplySenzaTimerNonInstalla(t *testing.T) {
 	}
 }
 
-// Le unità girano con UMask=0077 (rilievo del banco del 17/11: il .prev nasceva 0700 e dopo il
-// ritorno il servizio non partiva più, applied.json 0600 non era leggibile dal connettore): i modi si
-// impongono con fchmod, qualunque sia la umask.
+// Le unità girano con UMask=0077 (rilievo del banco del 17/11): i modi si impongono con fchmod.
 func TestApplyConUmaskStretta(t *testing.T) {
 	old := syscall.Umask(0o077)
 	t.Cleanup(func() { syscall.Umask(old) })
@@ -371,10 +479,9 @@ func TestApplyConUmaskStretta(t *testing.T) {
 			t.Errorf("%s: modo %v (%v), atteso %o", f, st.Mode().Perm(), err, want)
 		}
 	}
-	if _, ok, err := ReadApplied(b.updateDir); !ok || err != nil {
+	if _, ok, err := b.mailbox(t).ReadApplied(); !ok || err != nil {
 		t.Fatalf("applied.json illeggibile: %v %v", ok, err)
 	}
-	// Nessun welcome: il ritorno rimette il .prev al suo posto, eseguibile.
 	b.calls = nil
 	if a, err := RollbackCheck(b.cfg()); err != nil || a != RollbackRestore {
 		t.Fatalf("ritorno: %s %v", a, err)
@@ -402,8 +509,9 @@ func TestDecideRollback(t *testing.T) {
 	}
 }
 
-// rollback-check (D3 punti 3 e 4): col marcatore disarma, senza ripristina .prev e lascia
-// rolled-back.json con motivo no-welcome.
+// rollback-check (D3 punti 3 e 4): col marcatore disarma (e toglie anche i marcatori stantii), senza
+// ripristina .prev e lascia rolled-back.json con motivo no-welcome; con un pending.json aperto un
+// secondo aggiornamento è rifiutato (punto 6 della revisione).
 func TestRollbackCheck(t *testing.T) {
 	b := newBench(t)
 	body := []byte("binario nuovo 0.7.0")
@@ -411,13 +519,24 @@ func TestRollbackCheck(t *testing.T) {
 	if err := Apply(b.cfg()); err != nil {
 		t.Fatal(err)
 	}
+	// Secondo aggiornamento con pending.json aperto e senza marcatore: rifiutato.
 	b.calls = nil
-	// Il connettore nuovo si è collegato: disarmo.
-	if err := WriteConnected(b.updateDir, "0.7.0"); err != nil {
+	b.prepare(t, []byte("altro 0.7.1"), newManifest("0.7.1"), nil)
+	if err := Apply(b.cfg()); ReasonOf(err, "") != ReasonDownloadFailed || !strings.Contains(err.Error(), "in attesa del collegamento") {
+		t.Fatalf("secondo aggiornamento con pending aperto: %v", err)
+	}
+	b.binaryIs(t, string(body))
+	if o := b.rejected(t); o.Version != "0.7.1" {
+		t.Fatalf("apply.rejected: %+v", o)
+	}
+	_ = b.mailbox(t).Remove(FileApplyRejected)
+	// Il connettore nuovo si è collegato: disarmo, anche dei marcatori stantii.
+	mb := b.mailbox(t)
+	if err := mb.WriteConnected("0.7.0"); err != nil {
 		t.Fatal(err)
 	}
+	_ = mb.WriteConnected("0.5.0")
 	cfg := b.cfg()
-	cfg.Running = "0.6.1" // gira il .prev
 	a, err := RollbackCheck(cfg)
 	if err != nil || a != RollbackDisarm {
 		t.Fatalf("disarmo: %s %v", a, err)
@@ -426,8 +545,8 @@ func TestRollbackCheck(t *testing.T) {
 	if _, err := os.Lstat(b.bin + PrevSuffix); !os.IsNotExist(err) {
 		t.Fatal(".prev non tolto")
 	}
-	if _, ok, _ := ReadPending(b.updaterDir); ok || ConnectedExists(b.updateDir, "0.7.0") {
-		t.Fatal("pending.json o marcatore non tolti")
+	if _, ok := b.pending(t); ok || mb.ConnectedExists("0.7.0") || mb.ConnectedExists("0.5.0") {
+		t.Fatal("pending.json o marcatori non tolti")
 	}
 	if got := strings.Join(b.calls, ";"); got != "stop "+RollbackTimer {
 		t.Fatalf("systemctl: %s", got)
@@ -454,22 +573,22 @@ func TestRollbackCheck(t *testing.T) {
 	if _, err := os.Lstat(b.bin + PrevSuffix); !os.IsNotExist(err) {
 		t.Fatal(".prev non consumato dal ripristino")
 	}
-	o, ok, err := ReadOutcome(b.updateDir, FileRolledBack)
+	o, ok, err := mb.ReadOutcome(FileRolledBack)
 	if !ok || err != nil || o.Version != "0.8.0" || o.Reason != ReasonNoWelcome {
 		t.Fatalf("rolled-back.json: %+v %v %v", o, ok, err)
 	}
-	if _, ok, _ := ReadPending(b.updaterDir); ok {
+	if _, ok := b.pending(t); ok {
 		t.Fatal("pending.json rimasto dopo il ritorno")
 	}
-	if _, ok, _ := ReadApplied(b.updateDir); ok {
+	if _, ok, _ := mb.ReadApplied(); ok {
 		t.Fatal("applied.json rimasto dopo il ritorno")
 	}
 	if got := strings.Join(b.calls, ";"); got != "restart "+ServiceName {
 		t.Fatalf("systemctl: %s", got)
 	}
-	// Il connettore vecchio, ripartito, riporta il ritorno e nient'altro.
-	rep := CollectStartup(b.updateDir, "0.7.0")
-	if len(rep.Results) != 1 || rep.Results[0] != (protocol.UpdateResult{Version: "0.8.0", Outcome: protocol.UpdateRolledBack, Reason: ReasonNoWelcome}) {
-		t.Fatalf("esito riportato: %+v", rep)
+	// Il connettore vecchio, ripartito, trova il ritorno da riportare e nient'altro.
+	s := mb.Collect("0.7.0")
+	if len(s.Items) != 1 || s.Items[0].Result != (protocol.UpdateResult{Version: "0.8.0", Outcome: protocol.UpdateRolledBack, Reason: ReasonNoWelcome}) || s.Applied != nil {
+		t.Fatalf("esito riportato: %+v", s)
 	}
 }

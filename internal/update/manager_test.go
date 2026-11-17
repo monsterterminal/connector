@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,6 +25,7 @@ import (
 type fakeOut struct {
 	mu   sync.Mutex
 	sent []protocol.Envelope
+	fail bool // ogni Control fallisce: la connessione è caduta
 }
 
 func (f *fakeOut) Control(typ, re string, body any) error {
@@ -32,9 +34,18 @@ func (f *fakeOut) Control(typ, re string, body any) error {
 		return err
 	}
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return errors.New("connessione caduta")
+	}
 	f.sent = append(f.sent, protocol.Envelope{Type: typ, Re: re, Body: raw})
-	f.mu.Unlock()
 	return nil
+}
+
+func (f *fakeOut) setFail(v bool) {
+	f.mu.Lock()
+	f.fail = v
+	f.mu.Unlock()
 }
 
 func (f *fakeOut) all() []protocol.Envelope {
@@ -118,10 +129,12 @@ func newMBench(t *testing.T, hostAuto bool) *mbench {
 		CheckInterval:   time.Hour,
 		MailboxInterval: 50 * time.Millisecond,
 		DownloadTimeout: 5 * time.Second,
+		ConnectedAfter:  200 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { m.Close() })
 	b.m = m
 	return b
 }
@@ -224,8 +237,8 @@ func TestManagerScaricaEPreparaLaRichiesta(t *testing.T) {
 			if got, _ := os.ReadFile(filepath.Join(b.dir, FileSignature)); string(got) != string(sign(t, b.priv, m)) {
 				t.Fatal("firma diversa da quella ricevuta")
 			}
-			if v, err := ReadRequestVersion(b.dir); err != nil || v != "0.7.0" {
-				t.Fatalf("apply.request: %q %v", v, err)
+			if got, _ := os.ReadFile(filepath.Join(b.dir, FileApplyRequest)); string(got) != "0.7.0\n" {
+				t.Fatalf("apply.request: %q", got)
 			}
 			if st, _ := os.Stat(filepath.Join(b.dir, FileBinary)); st.Mode()&0o111 != 0 {
 				t.Fatal("il binario scaricato è eseguibile")
@@ -384,37 +397,90 @@ func TestManagerInterruttori(t *testing.T) {
 	waitFor(t, "download con interruttore assente", func() bool { _, err := os.Lstat(filepath.Join(b.dir, FileApplyRequest)); return err == nil })
 }
 
-// Dopo welcome la cassetta si legge e si riporta; mentre si è collegati, un apply.rejected lasciato
-// dall'updater arriva al backend entro l'intervallo di rilettura.
+// Dopo welcome la cassetta si legge e si riporta; i file si tolgono SOLO dopo la consegna (punto 3
+// della revisione); mentre si è collegati, un apply.rejected lasciato dall'updater arriva al backend
+// entro l'intervallo di rilettura; l'ok della propria versione arriva dopo la finestra di collegamento
+// (punto 7) e il marcatore si scrive solo allora.
 func TestManagerRiportaLaCassetta(t *testing.T) {
 	b := newMBench(t, true)
-	_ = WriteToMailbox(b.dir, FileRolledBack, Outcome{Version: "0.7.0", Reason: ReasonNoWelcome})
-	_ = WriteToMailbox(b.dir, FileApplied, Pending{Version: "0.6.1", PreviousVersion: "0.6.0"})
+	mb, _ := OpenMailbox(b.dir)
+	defer mb.Close()
+	_ = mb.WriteOutcome(FileRolledBack, Outcome{Version: "0.7.0", Reason: ReasonNoWelcome})
+	_ = mb.WriteOutcome(FileApplied, Pending{Version: "0.6.1", PreviousVersion: "0.6.0"})
+	// Prima connessione: l'invio fallisce subito (connessione caduta): niente si consuma.
+	b.out.setFail(true)
+	b.m.Attach(b.out)
+	time.Sleep(150 * time.Millisecond)
+	b.m.Detach()
+	if !mb.IsRegular(FileRolledBack) || !mb.IsRegular(FileApplied) {
+		t.Fatal("esiti consumati senza consegna")
+	}
+	if mb.ConnectedExists("0.6.1") {
+		t.Fatal("marcatore scritto prima della finestra di collegamento")
+	}
+	// Seconda connessione, che regge: rolled-back subito, ok dopo la finestra, poi tutto consumato.
+	b.out.setFail(false)
 	b.m.Attach(b.out)
 	defer b.m.Detach()
-	waitFor(t, "esiti dopo welcome", func() bool { return len(b.out.results(t)) == 2 })
-	rs := b.out.results(t)
-	if rs[0] != (protocol.UpdateResult{Version: "0.7.0", Outcome: protocol.UpdateRolledBack, Reason: ReasonNoWelcome}) ||
-		rs[1] != (protocol.UpdateResult{Version: "0.6.1", Outcome: protocol.UpdateOK}) {
-		t.Fatalf("esiti: %+v", rs)
+	waitFor(t, "rolled-back dopo welcome", func() bool { return len(b.out.results(t)) == 1 })
+	if r := b.out.results(t)[0]; r != (protocol.UpdateResult{Version: "0.7.0", Outcome: protocol.UpdateRolledBack, Reason: ReasonNoWelcome}) {
+		t.Fatalf("esito: %+v", r)
 	}
-	if !ConnectedExists(b.dir, "0.6.1") {
+	waitFor(t, "rolled-back.json consumato dopo la consegna", func() bool { return !mb.IsRegular(FileRolledBack) })
+	if mb.ConnectedExists("0.6.1") {
+		t.Fatal("marcatore scritto prima della finestra")
+	}
+	waitFor(t, "ok dopo la finestra di collegamento", func() bool { return len(b.out.results(t)) == 2 })
+	if r := b.out.results(t)[1]; r != (protocol.UpdateResult{Version: "0.6.1", Outcome: protocol.UpdateOK}) {
+		t.Fatalf("ok: %+v", r)
+	}
+	if !mb.ConnectedExists("0.6.1") {
 		t.Fatal("marcatore di collegamento non scritto")
 	}
-	// Ora l'updater rifiuta qualcosa mentre siamo collegati.
-	_ = WriteToMailbox(b.dir, FileApplyRejected, Outcome{Version: "0.8.0", Reason: ReasonBadSignature})
+	waitFor(t, "applied.json consumato", func() bool { return !mb.IsRegular(FileApplied) })
+	// Ora l'updater rifiuta qualcosa mentre siamo collegati: arriva come failed; un rifiuto per
+	// interruttore arriva come skipped.
+	_ = mb.WriteOutcome(FileApplyRejected, Outcome{Version: "0.8.0", Reason: ReasonBadSignature})
 	waitFor(t, "apply.rejected riportato", func() bool { return len(b.out.results(t)) == 3 })
 	if r := b.out.results(t)[2]; r != (protocol.UpdateResult{Version: "0.8.0", Outcome: protocol.UpdateFailed, Reason: ReasonBadSignature}) {
 		t.Fatalf("rifiuto dell'updater: %+v", r)
 	}
-	// Un secondo Attach (nuovo welcome) non riporta due volte.
+	waitFor(t, "apply.rejected consumato", func() bool { return !mb.IsRegular(FileApplyRejected) })
+	_ = mb.WriteOutcome(FileApplyRejected, Outcome{Version: "0.8.0", Reason: ReasonHostConfig})
+	waitFor(t, "host-config riportato", func() bool { return len(b.out.results(t)) == 4 })
+	if r := b.out.results(t)[3]; r != (protocol.UpdateResult{Version: "0.8.0", Outcome: protocol.UpdateSkipped, Reason: ReasonHostConfig}) {
+		t.Fatalf("rifiuto per interruttore: %+v", r)
+	}
+	// Un secondo Attach (nuovo welcome) non riporta due volte: aspetta il ciclo precedente.
 	b.m.Detach()
 	out2 := &fakeOut{}
 	b.m.Attach(out2)
 	waitFor(t, "update.check del secondo welcome", func() bool { return out2.count(protocol.TypeUpdateCheck) == 1 })
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	if n := len(out2.results(t)); n != 0 {
 		t.Fatalf("esiti riportati di nuovo: %+v", out2.results(t))
+	}
+}
+
+// Una connessione che cade prima della finestra non scrive il marcatore (crash-loop dopo welcome).
+func TestManagerNienteMarcatoreSeLaConnessioneCade(t *testing.T) {
+	b := newMBench(t, true)
+	mb, _ := OpenMailbox(b.dir)
+	defer mb.Close()
+	_ = mb.WriteOutcome(FileApplied, Pending{Version: "0.6.1", PreviousVersion: "0.6.0"})
+	for i := 0; i < 3; i++ {
+		b.m.Attach(b.out)
+		time.Sleep(60 * time.Millisecond) // meno della finestra (200 ms)
+		b.m.Detach()
+	}
+	if mb.ConnectedExists("0.6.1") || len(b.out.results(t)) != 0 || !mb.IsRegular(FileApplied) {
+		t.Fatalf("marcatore %v, esiti %+v", mb.ConnectedExists("0.6.1"), b.out.results(t))
+	}
+	b.m.Attach(b.out)
+	defer b.m.Detach()
+	waitFor(t, "ok con la connessione che regge", func() bool { return len(b.out.results(t)) == 1 })
+	if !mb.ConnectedExists("0.6.1") {
+		t.Fatal("marcatore non scritto dopo la finestra")
 	}
 }
 

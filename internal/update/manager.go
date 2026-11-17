@@ -3,12 +3,11 @@ package update
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,11 +22,14 @@ type Out interface {
 
 // Ritmi del gestore (ADR 0438 D4): update.check subito dopo welcome e poi ogni 6 ore con scarto
 // casuale di ±30 minuti; la cassetta delle lettere si rilegge ogni 15 secondi per riportare un
-// apply.rejected scritto dall'updater mentre il connettore è collegato.
+// apply.rejected scritto dall'updater mentre il connettore è collegato; il marcatore di collegamento
+// si scrive solo dopo welcome E 30 secondi di connessione mantenuta (dentro la finestra dei 5 minuti
+// del ritorno): un binario che si collega e cade subito non lo scrive (punto 7 della revisione).
 const (
 	DefaultCheckInterval   = 6 * time.Hour
 	DefaultCheckJitter     = 30 * time.Minute
 	DefaultMailboxInterval = 15 * time.Second
+	DefaultConnectedAfter  = 30 * time.Second
 )
 
 // Config configura il gestore lato connettore.
@@ -47,24 +49,26 @@ type Config struct {
 	// Platform è la piattaforma di chi verifica; vuota = quella del binario in esecuzione.
 	Platform Platform
 	// Ritmi; zero = default.
-	CheckInterval, CheckJitter, MailboxInterval, DownloadTimeout time.Duration
+	CheckInterval, CheckJitter, MailboxInterval, DownloadTimeout, ConnectedAfter time.Duration
 }
 
 // Manager è il gestore degli aggiornamenti lato connettore: chiede, verifica, scarica, prepara.
 type Manager struct {
 	cfg Config
 	key ed25519.PublicKey
+	mb  *Mailbox
 
 	mu          sync.Mutex
 	out         Out
 	backendAuto bool // interruttore del backend (welcome/config.update); assente = acceso
 	busy        bool // un download è in corso
 	stop        chan struct{}
-	loops       sync.WaitGroup // i cicli delle sessioni (Attach/Detach)
+	loops       sync.WaitGroup // il ciclo della sessione (Attach/Detach)
 	downloads   sync.WaitGroup // i download in sfondo
 }
 
-// New crea il gestore. La cartella Dir viene creata (0700) se manca.
+// New crea il gestore e apre la cassetta delle lettere (creata 0700 se manca) come os.Root: da qui in
+// poi ogni accesso passa dal descrittore.
 func New(cfg Config) (*Manager, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -86,6 +90,9 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.MailboxInterval <= 0 {
 		cfg.MailboxInterval = DefaultMailboxInterval
 	}
+	if cfg.ConnectedAfter <= 0 {
+		cfg.ConnectedAfter = DefaultConnectedAfter
+	}
 	if cfg.Platform == (Platform{}) {
 		cfg.Platform = ThisPlatform(cfg.Version)
 	}
@@ -97,10 +104,17 @@ func New(cfg Config) (*Manager, error) {
 		}
 		key = k
 	}
-	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
+	mb, err := OpenMailbox(cfg.Dir)
+	if err != nil {
 		return nil, err
 	}
-	return &Manager{cfg: cfg, key: key, backendAuto: true}, nil
+	return &Manager{cfg: cfg, key: key, mb: mb, backendAuto: true}, nil
+}
+
+// Close chiude la cassetta (fine del processo).
+func (m *Manager) Close() error {
+	m.Detach()
+	return m.mb.Close()
 }
 
 // SetBackendAutoUpdate applica l'interruttore ricevuto in welcome.config o config.update (ADR 0438
@@ -111,13 +125,12 @@ func (m *Manager) SetBackendAutoUpdate(v *bool) {
 	m.mu.Unlock()
 }
 
-// Attach si chiama dopo welcome: riporta gli esiti lasciati nella cassetta delle lettere, invia
+// Attach si chiama dopo welcome: ferma e ASPETTA il ciclo della sessione precedente (così due
+// riletture della cassetta non riportano due volte lo stesso esito), poi riporta gli esiti, invia
 // update.check e avvia i timer della sessione.
 func (m *Manager) Attach(out Out) {
+	m.stopLoop()
 	m.mu.Lock()
-	if m.stop != nil {
-		close(m.stop)
-	}
 	m.out = out
 	stop := make(chan struct{})
 	m.stop = stop
@@ -126,17 +139,21 @@ func (m *Manager) Attach(out Out) {
 	go m.loop(stop)
 }
 
-// Detach si chiama alla fine della connessione: ferma i timer; un download in corso continua e il
-// suo esito si riporta alla connessione successiva, dalla cassetta delle lettere o dal backend che
+// Detach si chiama alla fine della connessione: ferma il ciclo e lo aspetta; un download in corso
+// continua e il suo esito si riporta alla connessione successiva, dalla cassetta o dal backend che
 // ripropone.
-func (m *Manager) Detach() {
+func (m *Manager) Detach() { m.stopLoop() }
+
+func (m *Manager) stopLoop() {
 	m.mu.Lock()
-	if m.stop != nil {
-		close(m.stop)
-		m.stop = nil
-	}
+	old := m.stop
+	m.stop = nil
 	m.out = nil
 	m.mu.Unlock()
+	if old != nil {
+		close(old)
+		m.loops.Wait()
+	}
 }
 
 // Wait attende la fine dei download in sfondo (solo test).
@@ -144,12 +161,19 @@ func (m *Manager) Wait() { m.downloads.Wait() }
 
 func (m *Manager) loop(stop chan struct{}) {
 	defer m.loops.Done()
-	m.reportMailbox()
+	applied := m.reportMailbox()
 	m.sendCheck()
 	mailbox := time.NewTicker(m.cfg.MailboxInterval)
 	defer mailbox.Stop()
 	check := time.NewTimer(m.nextCheck())
 	defer check.Stop()
+	// La finestra di collegamento: solo se questa versione è appena stata installata.
+	var connected <-chan time.Time
+	if applied != nil {
+		t := time.NewTimer(m.cfg.ConnectedAfter)
+		defer t.Stop()
+		connected = t.C
+	}
 	for {
 		select {
 		case <-stop:
@@ -159,8 +183,27 @@ func (m *Manager) loop(stop chan struct{}) {
 		case <-check.C:
 			m.sendCheck()
 			check.Reset(m.nextCheck())
+		case <-connected:
+			connected = nil
+			m.confirmConnected()
 		}
 	}
+}
+
+// confirmConnected: welcome ricevuto e connessione mantenuta per la finestra. Scrive il marcatore che
+// disarma il ritorno e manda update.result ok; applied.json si toglie solo se l'invio è riuscito,
+// altrimenti si ripresenta al prossimo welcome.
+func (m *Manager) confirmConnected() {
+	if err := m.mb.WriteConnected(m.cfg.Version); err != nil {
+		m.cfg.Logger.Error("marcatore di collegamento non scritto", "errore", err.Error())
+		return
+	}
+	m.cfg.Logger.Info("aggiornamento riuscito: connessione mantenuta, marcatore di collegamento scritto", "versione", m.cfg.Version)
+	if err := m.result(protocol.UpdateResult{Version: m.cfg.Version, Outcome: protocol.UpdateOK}); err != nil {
+		return
+	}
+	_ = m.mb.Remove(FileApplied)
+	m.mb.RemoveDownload()
 }
 
 // nextCheck è l'intervallo fino al prossimo update.check: 6 ore ± 30 minuti (D4).
@@ -175,42 +218,52 @@ func (m *Manager) nextCheck() time.Duration {
 	return d
 }
 
-func (m *Manager) send(typ, re string, body any) {
+var errNotAttached = errors.New("non collegato")
+
+func (m *Manager) send(typ, re string, body any) error {
 	m.mu.Lock()
 	out := m.out
 	m.mu.Unlock()
 	if out == nil {
-		return
+		return errNotAttached
 	}
 	if err := out.Control(typ, re, body); err != nil {
 		m.cfg.Logger.Warn("aggiornamenti: invio non riuscito", "tipo", typ, "errore", err.Error())
+		return err
 	}
+	return nil
 }
 
 func (m *Manager) sendCheck() {
-	m.send(protocol.TypeUpdateCheck, "", struct{}{})
+	_ = m.send(protocol.TypeUpdateCheck, "", struct{}{})
 }
 
-func (m *Manager) result(r protocol.UpdateResult) {
+func (m *Manager) result(r protocol.UpdateResult) error {
 	if len(r.Reason) > protocol.MaxUpdateReasonLength {
 		r.Reason = r.Reason[:protocol.MaxUpdateReasonLength]
 	}
 	m.cfg.Logger.Info("aggiornamento: esito", "versione", r.Version, "esito", r.Outcome, "motivo", r.Reason)
-	m.send(protocol.TypeUpdateResult, "", r)
+	return m.send(protocol.TypeUpdateResult, "", r)
 }
 
-// reportMailbox legge gli esiti lasciati dall'updater e dal ritorno e li riporta (D3 punti 3 e 4).
-func (m *Manager) reportMailbox() {
-	rep := CollectStartup(m.cfg.Dir, m.cfg.Version)
-	for _, w := range rep.Warnings {
+// reportMailbox legge gli esiti lasciati dall'updater e dal ritorno e li riporta (D3 punti 3 e 4):
+// ogni file si toglie SOLO dopo che il backend ha ricevuto il messaggio. Restituisce applied.json
+// della versione in esecuzione, se c'è.
+func (m *Manager) reportMailbox() *Pending {
+	s := m.mb.Collect(m.cfg.Version)
+	for _, w := range s.Warnings {
 		m.cfg.Logger.Warn("aggiornamenti: cassetta delle lettere", "avviso", w)
 	}
-	if rep.Connected != "" {
-		m.cfg.Logger.Info("aggiornamento riuscito: marcatore di collegamento scritto", "versione", rep.Connected)
+	for _, it := range s.Items {
+		if err := m.result(it.Result); err != nil {
+			m.cfg.Logger.Warn("aggiornamenti: esito non consegnato, resta nella cassetta", "versione", it.Result.Version, "esito", it.Result.Outcome, "errore", err.Error())
+			continue
+		}
+		if err := it.Ack(); err != nil {
+			m.cfg.Logger.Warn("aggiornamenti: esito consegnato ma non tolto dalla cassetta", "errore", err.Error())
+		}
 	}
-	for _, r := range rep.Results {
-		m.result(r)
-	}
+	return s.Applied
 }
 
 // Handle elabora update.available e update.none; gli altri tipi non sono suoi.
@@ -239,7 +292,7 @@ func (m *Manager) reply(re, msg string) {
 	if len(msg) > 2000 {
 		msg = msg[:2000]
 	}
-	m.send(protocol.TypeError, re, protocol.ErrorBody{Code: protocol.CodeMessageInvalid, Message: msg})
+	_ = m.send(protocol.TypeError, re, protocol.ErrorBody{Code: protocol.CodeMessageInvalid, Message: msg})
 }
 
 // offer tratta un update.available (D3 punto 1, D6): verifica, interruttori, download in sfondo.
@@ -247,12 +300,12 @@ func (m *Manager) offer(u protocol.UpdateAvailable) {
 	version := u.Manifest.Version
 	sig, err := protocol.DecodeSignature(u.Signature)
 	if err != nil {
-		m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonBadSignature})
+		_ = m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonBadSignature})
 		return
 	}
 	if err := Verify(u.Manifest, sig, m.key, m.cfg.Platform); err != nil {
 		m.cfg.Logger.Warn("aggiornamento rifiutato", "versione", version, "errore", err.Error())
-		m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonOf(err, ReasonBadSignature)})
+		_ = m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonOf(err, ReasonBadSignature)})
 		return
 	}
 	m.mu.Lock()
@@ -266,14 +319,14 @@ func (m *Manager) offer(u protocol.UpdateAvailable) {
 		if !busy {
 			m.setBusy(false)
 		}
-		m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateSkipped, Reason: skip})
+		_ = m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateSkipped, Reason: skip})
 		return
 	}
 	if busy {
 		m.cfg.Logger.Info("aggiornamento già in corso: proposta ignorata", "versione", version)
 		return
 	}
-	if _, err := os.Lstat(filepath.Join(m.cfg.Dir, FileApplyRequest)); err == nil {
+	if m.mb.IsRegular(FileApplyRequest) {
 		m.setBusy(false)
 		m.cfg.Logger.Info("una richiesta di aggiornamento è già in attesa dell'updater: proposta ignorata", "versione", version)
 		return
@@ -297,21 +350,21 @@ func (m *Manager) setBusy(b bool) {
 func (m *Manager) prepare(man protocol.UpdateManifest, sig []byte) {
 	version := man.Version
 	m.cfg.Logger.Info("aggiornamento disponibile: scarico", "versione", version, "sicurezza", man.IsSecurity())
-	RemoveDownload(m.cfg.Dir)
-	if _, err := Download(context.Background(), m.cfg.HTTPClient, man.URL, man.SHA256, m.cfg.Dir, m.cfg.DownloadTimeout); err != nil {
+	m.mb.RemoveDownload()
+	if err := Download(context.Background(), m.cfg.HTTPClient, man.URL, man.SHA256, m.mb, m.cfg.DownloadTimeout); err != nil {
 		m.cfg.Logger.Warn("aggiornamento: download rifiutato", "versione", version, "errore", err.Error())
-		m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonOf(err, ReasonDownloadFailed)})
+		_ = m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonOf(err, ReasonDownloadFailed)})
 		return
 	}
 	canon, err := Canonical(man)
 	if err != nil {
-		m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonBadSignature})
+		_ = m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonBadSignature})
 		return
 	}
-	if err := WriteRequest(m.cfg.Dir, canon, sig, version); err != nil {
-		RemoveDownload(m.cfg.Dir)
+	if err := m.mb.WriteRequest(canon, sig, version); err != nil {
+		m.mb.RemoveDownload()
 		m.cfg.Logger.Warn("aggiornamento: richiesta non scritta", "versione", version, "errore", err.Error())
-		m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonDownloadFailed})
+		_ = m.result(protocol.UpdateResult{Version: version, Outcome: protocol.UpdateFailed, Reason: ReasonDownloadFailed})
 		return
 	}
 	m.cfg.Logger.Info("aggiornamento preparato: l'updater lo verifica e lo installa", "versione", version, "cartella", m.cfg.Dir)

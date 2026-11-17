@@ -33,17 +33,13 @@ func shaOf(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s
 func TestDownloadScriveBinarioVerificato(t *testing.T) {
 	body := []byte("binario di prova, non eseguibile")
 	srv := serveBody(t, 200, body, 0)
-	dir := filepath.Join(t.TempDir(), "update")
+	mb, dir := openMB(t)
 	// Un apply.request di un giro precedente non deve sopravvivere al nuovo download.
-	_ = os.MkdirAll(dir, 0o700)
 	_ = os.WriteFile(filepath.Join(dir, FileApplyRequest), []byte("0.0.1\n"), 0o600)
-	path, err := Download(context.Background(), srv.Client(), srv.URL+"/x", shaOf(body), dir, time.Second)
-	if err != nil {
+	if err := Download(context.Background(), srv.Client(), srv.URL+"/x", shaOf(body), mb, time.Second); err != nil {
 		t.Fatalf("download buono rifiutato: %v", err)
 	}
-	if path != filepath.Join(dir, FileBinary) {
-		t.Fatalf("percorso %s", path)
-	}
+	path := filepath.Join(dir, FileBinary)
 	got, _ := os.ReadFile(path)
 	st, _ := os.Stat(path)
 	if string(got) != string(body) || st.Mode().Perm() != 0o600 {
@@ -75,8 +71,8 @@ func TestDownloadRifiuta(t *testing.T) {
 		{"tempo scaduto", serveBody(t, 200, body, 300*time.Millisecond), shaOf(body), ReasonDownloadFailed},
 	}
 	for _, c := range cases {
-		dir := filepath.Join(t.TempDir(), "update")
-		_, err := Download(context.Background(), c.srv.Client(), c.srv.URL+"/x", c.sha, dir, 100*time.Millisecond)
+		mb, dir := openMB(t)
+		err := Download(context.Background(), c.srv.Client(), c.srv.URL+"/x", c.sha, mb, 100*time.Millisecond)
 		if got := ReasonOf(err, ""); err == nil || got != c.reason {
 			t.Errorf("%s: %v (motivo %q, atteso %q)", c.name, err, got, c.reason)
 		}
@@ -87,38 +83,12 @@ func TestDownloadRifiuta(t *testing.T) {
 	// Esattamente il tetto passa.
 	exact := []byte(strings.Repeat("y", 16))
 	srv := serveBody(t, 200, exact, 0)
-	if _, err := Download(context.Background(), srv.Client(), srv.URL+"/x", shaOf(exact), filepath.Join(t.TempDir(), "u"), time.Second); err != nil {
+	mb, _ := openMB(t)
+	if err := Download(context.Background(), srv.Client(), srv.URL+"/x", shaOf(exact), mb, time.Second); err != nil {
 		t.Fatalf("file al tetto rifiutato: %v", err)
 	}
 	// Un URL non raggiungibile è download-failed.
-	if _, err := Download(context.Background(), &http.Client{}, "https://127.0.0.1:1/x", shaOf(body), t.TempDir(), 200*time.Millisecond); ReasonOf(err, "") != ReasonDownloadFailed {
+	if err := Download(context.Background(), &http.Client{}, "https://127.0.0.1:1/x", shaOf(body), mb, 200*time.Millisecond); ReasonOf(err, "") != ReasonDownloadFailed {
 		t.Fatalf("connessione rifiutata: %v", err)
-	}
-}
-
-func TestWriteRequestERemoveDownload(t *testing.T) {
-	dir := t.TempDir()
-	if err := WriteRequest(dir, []byte(`{"a":1}`), []byte(strings.Repeat("s", 64)), "0.7.0"); err != nil {
-		t.Fatal(err)
-	}
-	for name, want := range map[string]string{FileManifest: `{"a":1}`, FileSignature: strings.Repeat("s", 64), FileApplyRequest: "0.7.0\n"} {
-		got, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil || string(got) != want {
-			t.Errorf("%s: %q %v", name, got, err)
-		}
-	}
-	if v, err := ReadRequestVersion(dir); err != nil || v != "0.7.0" {
-		t.Fatalf("versione della richiesta: %q %v", v, err)
-	}
-	RemoveDownload(dir)
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("file rimasti: %v", entries)
-	}
-	if _, err := ReadRequestVersion(dir); err == nil {
-		t.Fatal("richiesta assente letta")
-	}
-	_ = os.WriteFile(filepath.Join(dir, FileApplyRequest), []byte("non-una-versione\n"), 0o600)
-	if _, err := ReadRequestVersion(dir); err == nil {
-		t.Fatal("richiesta con versione non semver accettata")
 	}
 }

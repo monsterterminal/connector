@@ -42,24 +42,54 @@ privilegiato e **non può** sostituire il proprio eseguibile (`root:root 0755`, 
 lo fa un'unità systemd separata, `monsterterminal-connector-updater.service`, come root, con il
 sottocomando `apply-update` del binario **installato**. Il connettore prepara in
 `/var/lib/monsterterminal/update/` (cartella sua) il binario scaricato, il manifest canonico, la
-firma e `apply.request`; l'updater **non si fida di nulla di ciò che trova lì**: copia i tre file in
-`/var/lib/monsterterminal/updater/` (root, `0700`, creata da lui; se esiste con altro proprietario o
-altri permessi si ferma) aprendo i sorgenti con `O_NOFOLLOW`, solo se sono file regolari, per
-contenuto e col tetto di 64 MiB — mai un `rename` di un file dell'utente, mai un symlink seguito — e
-**su quella copia** riverifica da sé la firma Ed25519 del manifest con la chiave `mt-updates-2026`
-incorporata, lo SHA-256 del binario contro il manifest, piattaforma, `minProtocol` e che la versione
-sia strettamente maggiore della propria. Solo allora conserva `monsterterminal-connector.prev`,
-installa con una scrittura in `.new` e un `rename` atomico, arma il timer di ritorno e riavvia il
-servizio. Un binario non firmato, firmato con un'altra chiave (per esempio quella delle ricette) o
-con hash diverso, messo nella cartella dall'utente del connettore, **non viene mai installato**:
-l'updater scrive `apply.rejected` col motivo e il connettore lo riporta al backend.
+firma e `apply.request`; l'updater **non si fida di nulla di ciò che trova lì**.
+
+- **Una cartella propria, fuori dall'albero dell'utente** (ADR 0438 A1): `/var/lib/monsterterminal-updater`,
+  root `0700`, accanto a `/var/lib/monsterterminal` e non sotto. Se stesse sotto, chi scrive sul
+  genitore (l'utente del connettore) potrebbe rinominarla e metterne una sua al suo posto fra un
+  controllo e l'uso. Prima di usarla l'updater controlla che ogni antenato sia una cartella vera di
+  root, non un symlink, non scrivibile da altri; la cartella stessa deve essere di root e `0700`.
+- **Mai più per percorso**: la cassetta dell'utente e la cartella dell'updater si aprono una volta
+  sola come `os.Root` (descrittori di cartella) e ogni lettura, scrittura, cancellazione e rinomina
+  passa da lì; i sorgenti si aprono senza seguire link e senza bloccarsi (`O_NOFOLLOW`,
+  `O_NONBLOCK`: una FIFO al posto di un file si apre e si scopre con `fstat`, e le unità hanno
+  comunque un `TimeoutStartSec`), solo se file regolari, per contenuto e col tetto di 64 MiB — mai
+  un `rename` di un file dell'utente.
+- **Riverifica sulla copia**: firma Ed25519 del manifest canonico con la chiave `mt-updates-2026`
+  incorporata, SHA-256 del binario contro il manifest, piattaforma, `minProtocol`, versione
+  strettamente maggiore della propria; e lo SHA-256 della **copia finale**, quella scritta in
+  `monsterterminal-connector.new`, si confronta di nuovo col manifest prima della rinomina: in
+  `/usr/local/bin` arriva solo il contenuto verificato, non una lettura precedente.
+- **Il file dell'host lo legge anche root**: `auto_update = no` in `/etc/monsterterminal/connector.conf`
+  ferma l'updater (`apply.rejected` con motivo `host-config`, riportato come `update.result skipped`),
+  qualunque cosa ci sia nella cassetta. L'interruttore del cliente nella pagina Server (`autoUpdate`
+  dal backend) lo conosce **solo il connettore**: un pacchetto in regola messo nella cassetta a mano
+  con quell'interruttore spento verrebbe installato dall'updater — è un aggiornamento firmato e più
+  recente, lo stesso che il cliente riceverebbe riaccendendo l'interruttore; il file locale resta il
+  solo «no» assoluto.
+
+Solo allora conserva `monsterterminal-connector.prev`, installa con una scrittura in `.new` e un
+`rename` atomico, arma il timer di ritorno e riavvia il servizio. Un binario non firmato, firmato con
+un'altra chiave (per esempio quella delle ricette) o con hash diverso, messo nella cartella
+dall'utente del connettore, **non viene mai installato**: l'updater scrive `apply.rejected` col motivo
+e il connettore lo riporta al backend (anche un guasto dell'updater stesso lascia `apply.rejected`,
+così il backend non resta «in corso» senza esito). Finché un aggiornamento aspetta il collegamento
+(`pending.json`) non se ne applica un altro.
 
 Il backend non può fabbricare un aggiornamento: il manifest che spinge è quello firmato da chi
 custodisce la chiave, e il connettore e l'updater lo verificano entrambi. Il contrassegno
 `"security":true` sta dentro il manifest firmato e ignora solo l'interruttore del cliente nella pagina
 Server; `auto_update = no` nel file dell'host resta assoluto, anche per la sicurezza. L'unico ritorno
-indietro è locale, col binario `.prev` conservato, se la versione nuova non si collega entro 5
-minuti; un downgrade da manifest è sempre rifiutato (`not-newer`).
+indietro è locale, col binario `.prev` conservato, se la versione nuova non scrive il marcatore di
+collegamento entro 5 minuti; il marcatore si scrive solo dopo `welcome` **e** 30 secondi di
+connessione mantenuta, così un binario che si collega e cade subito torna indietro. Un downgrade da
+manifest è sempre rifiutato (`not-newer`). Gli esiti nella cassetta si tolgono solo dopo che il
+backend ha ricevuto il messaggio: un `rolled-back` non si perde.
+
+**Limite residuo, dichiarato.** Il marcatore di collegamento sta nella cassetta dell'utente del
+connettore: chi ha quell'utenza può scriverlo da sé e tenere installata una versione che non si
+collega. È un auto-sabotaggio del proprio servizio, senza alcuna escalation: il binario installato
+resta uno firmato con `mt-updates-2026` e più recente, lo stesso che riceverebbe comunque.
 
 ## Verificare un rilascio
 

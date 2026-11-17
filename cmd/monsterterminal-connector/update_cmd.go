@@ -17,7 +17,8 @@ import (
 //   - apply-update: dall'unità monsterterminal-connector-updater.service, quando il connettore ha
 //     lasciato apply.request in <state>/update/. Gira col binario INSTALLATO, cioè quello vecchio e
 //     noto buono: `version` qui è la versione da superare. Non si fida di nulla di ciò che il
-//     connettore (utente non privilegiato) ha preparato: copia, riverifica, poi installa.
+//     connettore (utente non privilegiato) ha preparato: copia nella SUA cartella (fuori dall'albero
+//     dell'utente, ADR 0438 A1), riverifica, legge il file dell'host (auto_update), poi installa.
 //   - rollback-check: dal timer monsterterminal-connector-rollback.timer, col binario .prev: se la
 //     versione nuova non ha scritto il marcatore di collegamento, la toglie di mezzo.
 //
@@ -42,7 +43,7 @@ func (a app) updateClient() *http.Client {
 	}
 }
 
-func (a app) applyConfig(log *slog.Logger, stateDir string) (update.ApplyConfig, error) {
+func (a app) applyConfig(log *slog.Logger, stateDir, configFile string) (update.ApplyConfig, error) {
 	bin, err := a.executable()
 	if err != nil {
 		return update.ApplyConfig{}, fmt.Errorf("percorso del binario: %w", err)
@@ -54,17 +55,18 @@ func (a app) applyConfig(log *slog.Logger, stateDir string) (update.ApplyConfig,
 		uid = a.getuid()
 	}
 	return update.ApplyConfig{
-		StateDir: stateDir, Binary: bin, Running: version, Key: a.updateKey,
+		StateDir: stateDir, ConfigFile: configFile, Binary: bin, Running: version, Key: a.updateKey,
+		UpdaterDir: a.updaterDir, TrustedBase: a.trustedBase,
 		Systemctl: a.systemctl, UID: uid, Logger: log, Now: a.now,
 	}, nil
 }
 
-func (a app) cmdApplyUpdate(log *slog.Logger, stateDir string) error {
-	cfg, err := a.applyConfig(log, stateDir)
+func (a app) cmdApplyUpdate(log *slog.Logger, stateDir, configFile string) error {
+	cfg, err := a.applyConfig(log, stateDir, configFile)
 	if err != nil {
 		return err
 	}
-	log.Info("apply-update", "binarioInstallato", cfg.Binary, "versioneInEsecuzione", version, "stato", stateDir)
+	log.Info("apply-update", "binarioInstallato", cfg.Binary, "versioneInEsecuzione", version, "stato", stateDir, "cartellaUpdater", update.UpdaterDirFor(stateDir), "fileHost", configFile)
 	started := time.Now()
 	if err := update.Apply(cfg); err != nil {
 		var rej *update.Rejection
@@ -78,8 +80,8 @@ func (a app) cmdApplyUpdate(log *slog.Logger, stateDir string) error {
 	return nil
 }
 
-func (a app) cmdRollbackCheck(log *slog.Logger, stateDir string) error {
-	cfg, err := a.applyConfig(log, stateDir)
+func (a app) cmdRollbackCheck(log *slog.Logger, stateDir, configFile string) error {
+	cfg, err := a.applyConfig(log, stateDir, configFile)
 	if err != nil {
 		return err
 	}

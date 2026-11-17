@@ -82,6 +82,9 @@ type app struct {
 	// updateKey è la chiave con cui l'updater riverifica i manifest; nil = mt-updates-2026 incorporata
 	// (solo i test la sostituiscono, con una coppia generata lì).
 	updateKey ed25519.PublicKey
+	// updaterDir e trustedBase: la cartella dell'updater e l'antenato fidato; vuoti = quelli di
+	// produzione (<state>-updater e "/"). Solo i test li spostano in una cartella temporanea.
+	updaterDir, trustedBase string
 }
 
 func defaultApp() app {
@@ -159,9 +162,9 @@ func (a app) run(ctx context.Context, args []string) int {
 	case "hooks":
 		err = a.cmdHooks(fs.Arg(0), *stateDir, *yes)
 	case "apply-update":
-		err = a.cmdApplyUpdate(log, *stateDir)
+		err = a.cmdApplyUpdate(log, *stateDir, *configFile)
 	case "rollback-check":
-		err = a.cmdRollbackCheck(log, *stateDir)
+		err = a.cmdRollbackCheck(log, *stateDir, *configFile)
 	default:
 		a.usage()
 		return exitUsage

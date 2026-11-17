@@ -142,8 +142,10 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   del manifest canonico con la chiave incorporata, `os`/`arch`, `minProtocol`, versione strettamente
   maggiore, URL sotto le release del repository — poi si scarica (64 MiB, SHA-256) in
   `/var/lib/monsterterminal/update/` e si lascia `apply.request` all'unità root `apply-update`, che
-  copia senza seguire symlink, **riverifica da sé** e installa con `.prev` e `rename` atomico; il timer
-  di ritorno (5 minuti) ripristina `.prev` se la versione nuova non si collega. Esiti in `update.result`:
+  copia nella sua cartella `/var/lib/monsterterminal-updater` (fuori dall'albero dell'utente, tutto dai
+  descrittori di cartella, senza seguire symlink), **riverifica da sé** (anche `auto_update` del file
+  dell'host) e installa con `.prev` e `rename` atomico; il timer di ritorno (5 minuti) ripristina
+  `.prev` se la versione nuova non resta collegata almeno 30 secondi. Esiti in `update.result`:
   `ok`, `failed` con motivo, `skipped` (`host-config`, `tenant-switch`), `rolled-back` (`no-welcome`).
   `hello.capabilities` dichiara `auto-update`. Dettagli in [`SECURITY.md`](SECURITY.md).
 

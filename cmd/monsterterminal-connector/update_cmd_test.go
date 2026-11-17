@@ -81,11 +81,15 @@ func (h *updateHarness) app() app {
 		c.Platform = update.Platform{OS: "linux", Arch: "amd64", Protocol: protocol.Version, Version: version}
 		c.MailboxInterval = 50 * time.Millisecond
 		c.CheckInterval = time.Hour
+		c.ConnectedAfter = 200 * time.Millisecond
 	}
 	a.executable = func() (string, error) { return h.bin, nil }
 	a.systemctl = func(args ...string) error { h.calls = append(h.calls, strings.Join(args, " ")); return nil }
 	a.getuid = os.Getuid
 	a.updateKey = h.pub
+	// La cartella dell'updater accanto a quella di stato, dentro la cartella del test (antenato fidato).
+	a.updaterDir = update.UpdaterDirFor(h.stateDir)
+	a.trustedBase = h.dir
 	return a
 }
 
@@ -114,6 +118,12 @@ func (h *updateHarness) offer(t *testing.T, m protocol.UpdateManifest) fakeserve
 }
 
 func (h *updateHarness) updateDir() string { return filepath.Join(h.stateDir, update.UpdateSubdir) }
+
+// connected dice se il marcatore di collegamento della versione è nella cassetta.
+func (h *updateHarness) connected(v string) bool {
+	_, err := os.Lstat(filepath.Join(h.updateDir(), update.ConnectedMarker(v)))
+	return err == nil
+}
 
 // requested dice se il connettore ha lasciato apply.request nella cassetta delle lettere.
 func (h *updateHarness) requested() bool {
@@ -199,7 +209,9 @@ func TestRunRifiutaESaltaLeOfferte(t *testing.T) {
 	waitExit(t, done)
 
 	// Il file locale dell'host vince anche sulla sicurezza (ADR 0409 D6, ADR 0438 D6).
-	update.RemoveDownload(h.updateDir())
+	for _, n := range []string{update.FileBinary, update.FileManifest, update.FileSignature, update.FileApplyRequest} {
+		_ = os.Remove(filepath.Join(h.updateDir(), n))
+	}
 	if err := os.WriteFile(h.confFile, []byte("auto_update=no\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +273,7 @@ func TestApplyUpdateERollbackCheckDalComando(t *testing.T) {
 	if r := h.s.UpdateResults(id)[0]; r != (protocol.UpdateResult{Version: "0.7.0", Outcome: protocol.UpdateOK}) {
 		t.Fatalf("%+v", r)
 	}
-	if !update.ConnectedExists(h.updateDir(), "0.7.0") {
+	if !h.connected("0.7.0") {
 		t.Fatal("marcatore di collegamento non scritto")
 	}
 	eventually(t, "connector.restarted update", func() bool {
@@ -336,9 +348,14 @@ func TestApplyUpdateRifiutaIlNonFirmatoEIlConnettoreLoRiporta(t *testing.T) {
 	m := h.manifest("0.7.0")
 	canon, _ := update.Canonical(m)
 	_ = os.WriteFile(filepath.Join(dir, update.FileBinary), h.body, 0o600)
-	if err := update.WriteRequest(dir, canon, make([]byte, 64), "0.7.0"); err != nil {
+	mb, err := update.OpenMailbox(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := mb.WriteRequest(canon, make([]byte, 64), "0.7.0"); err != nil {
+		t.Fatal(err)
+	}
+	mb.Close()
 	if code := h.app().run(context.Background(), []string{"apply-update", "-state-dir", h.stateDir}); code != exitError {
 		t.Fatalf("apply-update col non firmato: uscita %d", code)
 	}
@@ -355,6 +372,34 @@ func TestApplyUpdateRifiutaIlNonFirmatoEIlConnettoreLoRiporta(t *testing.T) {
 	waitHello(t, h.s)
 	eventually(t, "failed bad-signature riportato", func() bool { return len(h.s.UpdateResults(id)) == 1 })
 	if r := h.s.UpdateResults(id)[0]; r != (protocol.UpdateResult{Version: "0.7.0", Outcome: protocol.UpdateFailed, Reason: update.ReasonBadSignature}) {
+		t.Fatalf("%+v", r)
+	}
+	stop()
+	waitExit(t, done)
+	// auto_update = no nel file dell'host: l'updater rifiuta anche un pacchetto in regola (punto 2
+	// della revisione) e il connettore lo riporta come skipped host-config.
+	if err := os.WriteFile(h.confFile, []byte("auto_update=no\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mb, err = update.OpenMailbox(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mb.WriteRequest(canon, ed25519.Sign(h.priv, canon), "0.7.0"); err != nil {
+		t.Fatal(err)
+	}
+	mb.Close()
+	_ = os.WriteFile(filepath.Join(dir, update.FileBinary), h.body, 0o600)
+	if code := h.app().run(context.Background(), []string{"apply-update", "-state-dir", h.stateDir, "-config", h.confFile}); code != exitError {
+		t.Fatalf("apply-update con auto_update=no: uscita %d", code)
+	}
+	if got, _ := os.ReadFile(h.bin); string(got) != "binario installato "+version {
+		t.Fatal("binario installato cambiato con auto_update=no")
+	}
+	done, stop = h.start(t)
+	waitHello(t, h.s)
+	eventually(t, "skipped host-config riportato", func() bool { return len(h.s.UpdateResults(id)) == 2 })
+	if r := h.s.UpdateResults(id)[1]; r != (protocol.UpdateResult{Version: "0.7.0", Outcome: protocol.UpdateSkipped, Reason: update.ReasonHostConfig}) {
 		t.Fatalf("%+v", r)
 	}
 	stop()

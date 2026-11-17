@@ -18,24 +18,31 @@ aggiunte: un backend che non conosce `update.check` non risponde e il connettore
   (`bad-signature`, `not-newer`, `wrong-platform`, `protocol-too-old`, `bad-url`, `download-failed`,
   `sha256-mismatch`, `too-large`). Mai un downgrade da manifest.
 - **Updater root che non si fida** (`apply-update`, unità `monsterterminal-connector-updater.path` +
-  `.service`): copia binario, manifest e firma in `/var/lib/monsterterminal/updater/` (root `0700`)
-  senza seguire symlink e per contenuto, riverifica da sé firma, SHA-256, piattaforma, `minProtocol` e
-  versione, conserva `monsterterminal-connector.prev`, installa con `rename` atomico, arma il timer di
-  ritorno e riavvia il servizio. Un binario non firmato o firmato con un'altra chiave messo in `update/`
-  dall'utente del connettore non si installa mai (`apply.rejected`). Vedi `SECURITY.md`.
+  `.service`): copia binario, manifest e firma in `/var/lib/monsterterminal-updater/` (root `0700`,
+  **fuori** dall'albero dell'utente, antenati controllati; ADR 0438 A1) lavorando solo dai descrittori
+  delle cartelle (`os.Root`), senza seguire symlink, senza bloccarsi su una FIFO e per contenuto;
+  riverifica da sé firma, SHA-256 (anche della copia finale scritta in `.new`), piattaforma,
+  `minProtocol`, versione e `auto_update` del file dell'host; conserva `monsterterminal-connector.prev`,
+  installa con `rename` atomico, arma il timer di ritorno e riavvia il servizio. Un binario non firmato
+  o firmato con un'altra chiave messo in `update/` dall'utente del connettore non si installa mai
+  (`apply.rejected`); con `auto_update = no` nel file dell'host non si installa niente, nemmeno un
+  pacchetto in regola (`skipped host-config`). Vedi `SECURITY.md`.
 - **Ritorno alla versione precedente** (`rollback-check`, `monsterterminal-connector-rollback.timer`,
   5 minuti): se la versione nuova non scrive il marcatore di collegamento dopo `welcome`, il timer
   esegue il binario `.prev`, che si rimette al suo posto, scrive `rolled-back.json` e riavvia; il
-  connettore riporta `update.result rolled-back` con `no-welcome`. La versione nuova che si collega
-  riporta `update.result ok`. `connector.restarted` porta `update` o `rollback` come prima.
+  connettore riporta `update.result rolled-back` con `no-welcome`. La versione nuova scrive il marcatore
+  e riporta `update.result ok` solo dopo `welcome` e 30 secondi di connessione mantenuta. Gli esiti si
+  tolgono dalla cassetta solo dopo la consegna al backend. `connector.restarted` porta `update` o
+  `rollback` come prima.
 - **Interruttori** (ADR 0438 D6): si aggiorna solo se `auto_update` nel file dell'host E
   `autoUpdate` del backend (`welcome.config`, `config.update`, assente = acceso) sono accesi;
   altrimenti `update.result skipped` con `host-config` o `tenant-switch`, senza scaricare. Un manifest
   con `"security":true` ignora l'interruttore del backend, mai il file locale.
 - `hello.capabilities` dichiara `auto-update`. Le sessioni tmux non si toccano (`KillMode=process`):
   il banco lo prova.
-- `install.sh` scrive le tre unità in più (riscrivendole se esistono) e crea `update/`;
-  `--uninstall` le toglie insieme a `.prev`. `MT_ROLLBACK_AFTER` accorcia il timer **solo nei banchi**.
+- `install.sh` scrive le tre unità in più (riscrivendole se esistono, con `TimeoutStartSec`), crea
+  `update/` e `/var/lib/monsterterminal-updater`; `--uninstall` le toglie insieme a `.prev`.
+  `MT_ROLLBACK_AFTER` accorcia il timer **solo nei banchi** (e solo con `MT_BANCO=1`).
 - Rilasci: `packaging/release.json` (`{"security": false}`) decide `"security":true` nel manifest
   firmato (solo quando è vero; chiavi in ordine alfabetico, senza spazi); `firma-rilascio` stampa
   «MANIFEST DI SICUREZZA» prima di chiedere la passphrase.

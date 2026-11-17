@@ -12,9 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
+	"github.com/monsterterminal/connector/internal/hostconf"
 	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/signing"
 )
@@ -27,9 +27,10 @@ const (
 	PrevSuffix = ".prev"
 	// NewSuffix è il suffisso del file scritto prima della rinomina atomica.
 	NewSuffix = ".new"
-	// UpdaterSubdir e UpdateSubdir sono le due cartelle sotto <state>.
-	UpdaterSubdir = "updater"
-	UpdateSubdir  = "update"
+	// UpdateSubdir è la cassetta delle lettere sotto <state> (dell'utente del connettore).
+	UpdateSubdir = "update"
+	// DefaultConfigFile è il file delle scelte del cliente sull'host (§1.11), letto anche dall'updater.
+	DefaultConfigFile = "/etc/monsterterminal/connector.conf"
 )
 
 // Systemctl esegue `systemctl args...`; sostituibile nei test.
@@ -46,8 +47,17 @@ func RunSystemctl(args ...string) error {
 
 // ApplyConfig configura l'updater (root).
 type ApplyConfig struct {
-	// StateDir è /var/lib/monsterterminal: sotto ci sono update/ (del connettore) e updater/ (root).
+	// StateDir è /var/lib/monsterterminal: dell'utente del connettore; sotto c'è update/.
 	StateDir string
+	// UpdaterDir è la cartella dell'updater, FUORI dall'albero dell'utente (ADR 0438 A1):
+	// vuota = UpdaterDirFor(StateDir), cioè /var/lib/monsterterminal-updater.
+	UpdaterDir string
+	// TrustedBase è l'antenato da cui in su non si controlla più la proprietà (vuoto = "/": si
+	// controlla tutto; i test lo mettono alla loro cartella temporanea).
+	TrustedBase string
+	// ConfigFile è il file delle scelte del cliente: auto_update = no ferma anche l'updater
+	// (D6 «assoluto»); vuoto = DefaultConfigFile. Un file illeggibile vale «spento».
+	ConfigFile string
 	// Binary è il percorso del binario installato (/usr/local/bin/monsterterminal-connector).
 	Binary string
 	// Running è la versione del binario che esegue apply-update: quella installata, nota buona.
@@ -58,7 +68,8 @@ type ApplyConfig struct {
 	Key ed25519.PublicKey
 	// Systemctl; nil = il vero systemctl.
 	Systemctl Systemctl
-	// UID è il proprietario atteso di updater/; -1 = l'utente che esegue (root nell'unità).
+	// UID è il proprietario atteso della cartella dell'updater e dei suoi antenati; -1 = l'utente che
+	// esegue (root nell'unità).
 	UID    int
 	Logger *slog.Logger
 	Now    func() time.Time
@@ -90,78 +101,105 @@ func (c *ApplyConfig) defaults() error {
 	if c.StateDir == "" || c.Binary == "" {
 		return errors.New("StateDir e Binary sono obbligatori")
 	}
+	if c.UpdaterDir == "" {
+		c.UpdaterDir = UpdaterDirFor(c.StateDir)
+	}
+	if c.TrustedBase == "" {
+		c.TrustedBase = "/"
+	}
+	if c.ConfigFile == "" {
+		c.ConfigFile = DefaultConfigFile
+	}
 	return nil
 }
 
 // Apply è `apply-update`: l'unità root che installa ciò che il connettore ha preparato in
-// <state>/update/, SENZA fidarsene (ADR 0438 D3 punto 2, decisione BOSS 2026-11-17).
+// <state>/update/, SENZA fidarsene (ADR 0438 D3 punto 2 e A1, decisione BOSS 2026-11-17).
 //
-//  1. apply.request si toglie in ogni caso (anche su rifiuto), così l'unità path non riparte.
-//  2. <state>/updater/ è root 0700, creata qui; se esiste con un altro proprietario o altri permessi
-//     ci si ferma.
-//  3. Manifest, firma e binario si copiano da update/ a updater/ aprendo i sorgenti con O_NOFOLLOW,
-//     solo se sono file regolari (Lstat + fstat), per contenuto e col tetto: mai rename di un file
-//     dell'utente, mai seguire un symlink.
-//  4. SULLA COPIA si riverificano firma Ed25519 del manifest canonico con la chiave incorporata,
-//     SHA-256 del binario contro il manifest, piattaforma, minProtocol e versione > Running.
-//  5. Solo allora: <bin>.prev (copia del binario attuale), <bin>.new root 0755 + rename atomico,
-//     pending.json in updater/ e applied.json nella cassetta del connettore, timer di ritorno armato
-//     e servizio riavviato.
+//  1. La cassetta <state>/update/ e la cartella dell'updater si aprono UNA volta come os.Root e da lì
+//     in poi ogni lettura, scrittura e cancellazione passa dai descrittori, mai più dal percorso:
+//     chi scrive sul genitore non può scambiare una cartella fra un controllo e l'uso. La cartella
+//     dell'updater sta fuori dall'albero dell'utente (/var/lib/monsterterminal-updater, root 0700,
+//     ogni antenato di root e non scrivibile da altri).
+//  2. apply.request si toglie in ogni caso (anche su rifiuto), così l'unità path non riparte.
+//  3. auto_update = no nel file dell'host (D6, «assoluto») ferma anche l'updater: reason host-config.
+//  4. Manifest, firma e binario si copiano da update/ nella cartella dell'updater senza seguire link,
+//     senza bloccarsi (O_NONBLOCK: una FIFO si apre e si scopre), solo se file regolari, col tetto.
+//  5. SULLA COPIA si riverificano firma Ed25519 del manifest canonico con la chiave incorporata,
+//     SHA-256, piattaforma, minProtocol e versione > Running; e lo SHA-256 della copia FINALE,
+//     quella scritta in <bin>.new, si confronta di nuovo col manifest prima della rinomina.
+//  6. Solo allora: <bin>.prev, <bin>.new root 0755 + rename atomico, pending.json e applied.json,
+//     timer di ritorno armato e servizio riavviato.
 //
-// Un rifiuto scrive apply.rejected (versione, motivo) nella cassetta del connettore, che lo riporta
-// come update.result failed; un binario non firmato, firmato con un'altra chiave o con sha diverso
-// non si installa MAI. Gli errori di installazione (copie, rename, systemctl) si riportano col motivo
-// download-failed: il pacchetto preparato non è installabile.
+// Ogni rifiuto, anche per un guasto dell'updater stesso, scrive apply.rejected (versione, motivo) nella
+// cassetta: il connettore lo riporta come update.result failed (o skipped per host-config). Un binario
+// non firmato, firmato con un'altra chiave o con sha diverso non si installa MAI. Gli errori di
+// installazione (copie, rename, systemctl, cartelle) hanno motivo download-failed.
 func Apply(cfg ApplyConfig) (err error) {
 	if err := cfg.defaults(); err != nil {
 		return err
 	}
 	log := cfg.Logger
-	updateDir := filepath.Join(cfg.StateDir, UpdateSubdir)
-	updaterDir := filepath.Join(cfg.StateDir, UpdaterSubdir)
-	// 1. La richiesta si consuma sempre.
-	requested, reqErr := ReadRequestVersion(updateDir)
-	defer os.Remove(filepath.Join(updateDir, FileApplyRequest))
+	mb, err := OpenMailboxUnder(cfg.StateDir)
+	if err != nil {
+		// Senza cassetta non si può nemmeno dire di no: resta il log.
+		return fmt.Errorf("cassetta delle lettere: %w", err)
+	}
+	defer mb.Close()
+	// 2. La richiesta si consuma sempre.
+	requested, reqErr := mb.ReadRequestVersion()
+	defer mb.Remove(FileApplyRequest)
 	if reqErr != nil {
 		log.Warn("apply.request illeggibile", "errore", reqErr.Error())
 	}
 	version := requested
 	rejected := func(reason string, cause error) error {
 		log.Error("aggiornamento rifiutato dall'updater", "versione", version, "motivo", reason, "errore", cause.Error())
-		if werr := WriteToMailbox(updateDir, FileApplyRejected, Outcome{Version: version, Reason: reason}); werr != nil {
+		if werr := mb.WriteOutcome(FileApplyRejected, Outcome{Version: version, Reason: reason}); werr != nil {
 			log.Error("apply.rejected non scritto", "errore", werr.Error())
 		}
 		return &Rejection{Reason: reason, Err: cause}
 	}
-	// 2. La cartella root-only.
-	if err := ensureOwnedDir(updaterDir, cfg.UID); err != nil {
-		return fmt.Errorf("cartella dell'updater: %w", err)
+	// 1. La cartella dell'updater, fuori dall'albero dell'utente.
+	store, err := OpenStore(cfg.UpdaterDir, cfg.UID, cfg.TrustedBase)
+	if err != nil {
+		return rejected(ReasonDownloadFailed, fmt.Errorf("cartella dell'updater: %w", err))
 	}
-	defer func() {
-		for _, n := range []string{FileBinary, FileManifest, FileSignature} {
-			_ = os.Remove(filepath.Join(updaterDir, n))
+	defer store.Close()
+	defer store.RemoveCopies()
+	// Un aggiornamento precedente ancora in attesa del marcatore (punto 6 della revisione): non se
+	// ne sovrappone un altro, decide prima il timer.
+	if p, ok, perr := store.ReadPending(); perr != nil || ok {
+		if perr != nil {
+			return rejected(ReasonDownloadFailed, fmt.Errorf("pending.json illeggibile: %w", perr))
 		}
-	}()
-	// 3. Le copie, senza fiducia.
-	manCopy := filepath.Join(updaterDir, FileManifest)
-	if _, err := copyNoFollow(filepath.Join(updateDir, FileManifest), manCopy, MaxManifestBytes, 0o600); err != nil {
+		return rejected(ReasonDownloadFailed, fmt.Errorf("un aggiornamento alla %s è ancora in attesa del collegamento: il timer di ritorno deciderà prima", p.Version))
+	}
+	// 3. Il file dell'host: la scelta del padrone della macchina, letta da root, non dal connettore.
+	hc, _, herr := hostconf.Load(cfg.ConfigFile)
+	if herr != nil {
+		return rejected(ReasonHostConfig, fmt.Errorf("file dell'host %s illeggibile: %w", cfg.ConfigFile, herr))
+	}
+	if !hc.AutoUpdate {
+		return rejected(ReasonHostConfig, fmt.Errorf("auto_update = no in %s: gli aggiornamenti sono spenti su questo host", cfg.ConfigFile))
+	}
+	// 4. Le copie, senza fiducia.
+	if _, err := copyEntry(mb.Dir, FileManifest, store.Dir, FileManifest, MaxManifestBytes, 0o600); err != nil {
 		return rejected(ReasonOf(err, ReasonDownloadFailed), fmt.Errorf("manifest: %w", err))
 	}
-	sigCopy := filepath.Join(updaterDir, FileSignature)
-	if _, err := copyNoFollow(filepath.Join(updateDir, FileSignature), sigCopy, MaxManifestBytes, 0o600); err != nil {
+	if _, err := copyEntry(mb.Dir, FileSignature, store.Dir, FileSignature, MaxManifestBytes, 0o600); err != nil {
 		return rejected(ReasonOf(err, ReasonDownloadFailed), fmt.Errorf("firma: %w", err))
 	}
-	binCopy := filepath.Join(updaterDir, FileBinary)
-	binSHA, err := copyNoFollow(filepath.Join(updateDir, FileBinary), binCopy, MaxBinaryBytes, 0o755)
+	binSHA, err := copyEntry(mb.Dir, FileBinary, store.Dir, FileBinary, MaxBinaryBytes, 0o700)
 	if err != nil {
 		return rejected(ReasonOf(err, ReasonDownloadFailed), fmt.Errorf("binario: %w", err))
 	}
-	// 4. La riverifica, sulla copia (letta da updater/, che è nostra).
-	manRaw, err := readSmallNoFollow(manCopy, MaxManifestBytes)
+	// 5. La riverifica, sulla copia (letta dalla cartella dell'updater, che è nostra).
+	manRaw, err := store.readSmall(FileManifest, MaxManifestBytes)
 	if err != nil {
 		return rejected(ReasonDownloadFailed, fmt.Errorf("manifest copiato: %w", err))
 	}
-	sigRaw, err := readSmallNoFollow(sigCopy, MaxManifestBytes)
+	sigRaw, err := store.readSmall(FileSignature, MaxManifestBytes)
 	if err != nil {
 		return rejected(ReasonDownloadFailed, fmt.Errorf("firma copiata: %w", err))
 	}
@@ -187,38 +225,44 @@ func Apply(cfg ApplyConfig) (err error) {
 	if requested != "" && requested != m.Version {
 		log.Warn("apply.request e manifest non concordano sulla versione", "richiesta", requested, "manifest", m.Version)
 	}
-	// 5. L'installazione.
+	// 6. L'installazione.
 	log.Info("aggiornamento verificato dall'updater: installo", "versione", m.Version, "precedente", cfg.Running)
-	prev := cfg.Binary + PrevSuffix
-	if _, err := copyNoFollow(cfg.Binary, prev, MaxBinaryBytes, 0o755); err != nil {
-		return rejected(ReasonDownloadFailed, fmt.Errorf("copia del binario attuale in %s: %w", prev, err))
+	binDir, _, err := OpenDir(filepath.Dir(cfg.Binary))
+	if err != nil {
+		return rejected(ReasonDownloadFailed, fmt.Errorf("cartella del binario: %w", err))
 	}
-	newPath := cfg.Binary + NewSuffix
-	if _, err := copyNoFollow(binCopy, newPath, MaxBinaryBytes, 0o755); err != nil {
-		return rejected(ReasonDownloadFailed, fmt.Errorf("scrittura di %s: %w", newPath, err))
+	defer binDir.Close()
+	binName := filepath.Base(cfg.Binary)
+	if _, err := copyEntry(binDir, binName, binDir, binName+PrevSuffix, MaxBinaryBytes, 0o755); err != nil {
+		return rejected(ReasonDownloadFailed, fmt.Errorf("copia del binario attuale in %s: %w", binName+PrevSuffix, err))
 	}
-	if err := os.Chmod(newPath, 0o755); err != nil {
-		_ = os.Remove(newPath)
-		return rejected(ReasonDownloadFailed, fmt.Errorf("permessi di %s: %w", newPath, err))
+	// La copia finale si verifica di nuovo: è il contenuto che finirà in /usr/local/bin.
+	if err := installVerified(store.Dir, FileBinary, binDir, binName+NewSuffix, m.SHA256); err != nil {
+		_ = binDir.Remove(binName + NewSuffix)
+		_ = binDir.Remove(binName + PrevSuffix)
+		return rejected(ReasonOf(err, ReasonDownloadFailed), fmt.Errorf("scrittura di %s: %w", binName+NewSuffix, err))
 	}
 	p := Pending{Version: m.Version, PreviousVersion: cfg.Running, At: protocol.Timestamp(cfg.Now())}
-	if err := WritePending(updaterDir, p); err != nil {
-		_ = os.Remove(newPath)
+	if err := store.WritePending(p); err != nil {
+		_ = binDir.Remove(binName + NewSuffix)
+		_ = binDir.Remove(binName + PrevSuffix)
 		return rejected(ReasonDownloadFailed, fmt.Errorf("pending.json: %w", err))
 	}
 	// Il timer di ritorno si arma PRIMA dello scambio: senza rete di sicurezza non si installa.
 	if err := cfg.Systemctl("restart", RollbackTimer); err != nil {
-		_ = os.Remove(newPath)
-		_ = os.Remove(filepath.Join(updaterDir, FilePending))
+		_ = binDir.Remove(binName + NewSuffix)
+		_ = binDir.Remove(binName + PrevSuffix)
+		_ = store.Remove(FilePending)
 		return rejected(ReasonDownloadFailed, fmt.Errorf("timer di ritorno: %w", err))
 	}
-	if err := os.Rename(newPath, cfg.Binary); err != nil {
-		_ = os.Remove(newPath)
-		_ = os.Remove(filepath.Join(updaterDir, FilePending))
+	if err := binDir.root.Rename(binName+NewSuffix, binName); err != nil {
+		_ = binDir.Remove(binName + NewSuffix)
+		_ = binDir.Remove(binName + PrevSuffix)
+		_ = store.Remove(FilePending)
 		_ = cfg.Systemctl("stop", RollbackTimer)
 		return rejected(ReasonDownloadFailed, fmt.Errorf("rinomina su %s: %w", cfg.Binary, err))
 	}
-	if err := WriteToMailbox(updateDir, FileApplied, p); err != nil {
+	if err := mb.WriteOutcome(FileApplied, p); err != nil {
 		// Il binario è già installato: non si torna indietro per un file di esito. Il connettore
 		// nuovo non manderà `ok`, il timer farà il suo lavoro se davvero non si collega.
 		log.Error("applied.json non scritto", "errore", err.Error())
@@ -227,6 +271,22 @@ func Apply(cfg ApplyConfig) (err error) {
 	if err := cfg.Systemctl("restart", ServiceName); err != nil {
 		log.Error("riavvio del servizio non riuscito: il timer di ritorno deciderà", "errore", err.Error())
 		return err
+	}
+	return nil
+}
+
+// installVerified copia src (dalla cartella dell'updater) in dst (nella cartella del binario, root
+// 0755) calcolando lo SHA-256 di ciò che SCRIVE e lo confronta con wantSHA: se non torna, il file
+// scritto si toglie e il motivo è sha256-mismatch. È la verifica che conta: quella sul contenuto che
+// finisce in /usr/local/bin, non su una lettura precedente (punto 1c della revisione).
+func installVerified(src *Dir, srcName string, dst *Dir, dstName, wantSHA string) error {
+	got, err := copyEntry(src, srcName, dst, dstName, MaxBinaryBytes, 0o755)
+	if err != nil {
+		return err
+	}
+	if got != wantSHA {
+		_ = dst.Remove(dstName)
+		return reject(ReasonSHA256Mismatch, "sha256 della copia finale %s, manifest %s", got, wantSHA)
 	}
 	return nil
 }
@@ -267,48 +327,64 @@ func DecideRollback(pending, connected bool) RollbackAction {
 
 // RollbackCheck è `rollback-check`: eseguito dal timer, come root, col binario .prev. Legge
 // pending.json; se il connettore nuovo ha scritto connected-<versione> toglie pending.json, .prev e
-// il marcatore e ferma il timer; altrimenti rimette .prev al posto del binario (rename atomico),
-// scrive rolled-back.json (versione tentata, motivo no-welcome) e riavvia il servizio.
+// tutti i marcatori connected-* (anche quelli stantii) e ferma il timer; altrimenti rimette .prev al
+// posto del binario (rename atomico, modo 0755), scrive rolled-back.json (versione tentata, motivo
+// no-welcome) e riavvia il servizio. Tutto dai descrittori delle cartelle, mai dai percorsi.
 func RollbackCheck(cfg ApplyConfig) (RollbackAction, error) {
 	if err := cfg.defaults(); err != nil {
 		return RollbackNothing, err
 	}
 	log := cfg.Logger
-	updateDir := filepath.Join(cfg.StateDir, UpdateSubdir)
-	updaterDir := filepath.Join(cfg.StateDir, UpdaterSubdir)
-	if err := ensureOwnedDir(updaterDir, cfg.UID); err != nil {
+	store, err := OpenStore(cfg.UpdaterDir, cfg.UID, cfg.TrustedBase)
+	if err != nil {
 		return RollbackNothing, fmt.Errorf("cartella dell'updater: %w", err)
 	}
-	p, ok, err := ReadPending(updaterDir)
+	defer store.Close()
+	p, ok, err := store.ReadPending()
 	if err != nil {
 		return RollbackNothing, err
 	}
-	prev := cfg.Binary + PrevSuffix
-	action := DecideRollback(ok, ok && ConnectedExists(updateDir, p.Version))
-	switch action {
-	case RollbackNothing:
+	if !ok {
 		log.Info("nessun aggiornamento in attesa: niente da fare")
+		return RollbackNothing, nil
+	}
+	mb, err := OpenMailboxUnder(cfg.StateDir)
+	if err != nil {
+		return RollbackNothing, fmt.Errorf("cassetta delle lettere: %w", err)
+	}
+	defer mb.Close()
+	binDir, _, err := OpenDir(filepath.Dir(cfg.Binary))
+	if err != nil {
+		return RollbackNothing, fmt.Errorf("cartella del binario: %w", err)
+	}
+	defer binDir.Close()
+	binName := filepath.Base(cfg.Binary)
+	action := DecideRollback(true, mb.ConnectedExists(p.Version))
+	switch action {
 	case RollbackDisarm:
-		log.Info("il connettore nuovo si è collegato: disarmo il ritorno", "versione", p.Version)
-		for _, f := range []string{filepath.Join(updaterDir, FilePending), prev, ConnectedMarker(updateDir, p.Version)} {
-			if err := os.Remove(f); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				log.Warn("file non rimosso", "file", f, "errore", err.Error())
-			}
+		log.Info("il connettore nuovo è rimasto collegato: disarmo il ritorno", "versione", p.Version)
+		if err := store.Remove(FilePending); err != nil {
+			log.Warn("pending.json non rimosso", "errore", err.Error())
 		}
+		if err := binDir.Remove(binName + PrevSuffix); err != nil {
+			log.Warn(".prev non rimosso", "errore", err.Error())
+		}
+		mb.RemoveConnectedMarkers()
 		_ = cfg.Systemctl("stop", RollbackTimer)
 	case RollbackRestore:
 		log.Error("il connettore nuovo non si è collegato in tempo: ripristino la versione precedente", "tentata", p.Version, "precedente", p.PreviousVersion)
-		if err := os.Rename(prev, cfg.Binary); err != nil {
+		if err := binDir.root.Rename(binName+PrevSuffix, binName); err != nil {
 			return action, fmt.Errorf("ripristino di %s: %w", cfg.Binary, err)
 		}
-		if err := os.Chmod(cfg.Binary, 0o755); err != nil {
+		if err := binDir.root.Chmod(binName, 0o755); err != nil {
 			log.Error("permessi del binario ripristinato", "errore", err.Error())
 		}
-		if err := WriteToMailbox(updateDir, FileRolledBack, Outcome{Version: p.Version, Reason: ReasonNoWelcome}); err != nil {
+		if err := mb.WriteOutcome(FileRolledBack, Outcome{Version: p.Version, Reason: ReasonNoWelcome}); err != nil {
 			log.Error("rolled-back.json non scritto", "errore", err.Error())
 		}
-		_ = os.Remove(filepath.Join(updateDir, FileApplied))
-		_ = os.Remove(filepath.Join(updaterDir, FilePending))
+		_ = mb.Remove(FileApplied)
+		mb.RemoveConnectedMarkers()
+		_ = store.Remove(FilePending)
 		if err := cfg.Systemctl("restart", ServiceName); err != nil {
 			return action, err
 		}
@@ -316,94 +392,56 @@ func RollbackCheck(cfg ApplyConfig) (RollbackAction, error) {
 	return action, nil
 }
 
-// ensureOwnedDir crea dir (0700) se manca; se esiste deve essere una cartella (non un symlink) di uid
-// con permessi 0700, altrimenti errore: l'updater non lavora in una cartella che non controlla.
-func ensureOwnedDir(dir string, uid int) error {
-	st, err := os.Lstat(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return err
-		}
-		st, err = os.Lstat(dir)
-	}
+// copyEntry copia src/srcName in dst/dstName per contenuto, dai descrittori delle due cartelle: il
+// sorgente si apre senza seguire link e senza bloccarsi, deve essere un file regolare (fstat) entro
+// max byte (oltre: too-large); la destinazione si libera (unlink) e si ricrea con O_EXCL, il modo si
+// impone con fchmod. Restituisce lo SHA-256 esadecimale di ciò che ha scritto. Un sorgente assente,
+// non regolare o illeggibile è download-failed: ciò che il connettore ha preparato non è utilizzabile.
+func copyEntry(src *Dir, srcName string, dst *Dir, dstName string, max int64, mode fs.FileMode) (string, error) {
+	f, err := src.root.OpenFile(srcName, openFlags, 0)
 	if err != nil {
-		return err
-	}
-	if !st.IsDir() {
-		return fmt.Errorf("%s non è una cartella", dir)
-	}
-	if sys, ok := st.Sys().(*syscall.Stat_t); ok && int(sys.Uid) != uid {
-		return fmt.Errorf("%s appartiene a uid %d, atteso %d", dir, sys.Uid, uid)
-	}
-	if st.Mode().Perm() != 0o700 {
-		return fmt.Errorf("%s ha permessi %o, attesi 0700", dir, st.Mode().Perm())
-	}
-	return nil
-}
-
-// copyNoFollow copia src in dst per contenuto, senza mai seguire un symlink: Lstat e apertura con
-// O_NOFOLLOW sul sorgente, che deve essere un file regolare entro max byte (oltre: too-large); dst
-// si toglie e si ricrea con O_EXCL e il modo dato. Restituisce lo SHA-256 esadecimale di ciò che ha
-// copiato. Un sorgente assente, non regolare o illeggibile è download-failed: ciò che il connettore
-// ha preparato non è utilizzabile.
-func copyNoFollow(src, dst string, max int64, mode fs.FileMode) (string, error) {
-	st, err := os.Lstat(src)
-	if err != nil {
-		return "", reject(ReasonDownloadFailed, "%v", err)
-	}
-	if !st.Mode().IsRegular() {
-		return "", reject(ReasonDownloadFailed, "%s non è un file regolare (%s)", filepath.Base(src), st.Mode().Type())
-	}
-	f, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NOCTTY, 0)
-	if err != nil {
-		return "", reject(ReasonDownloadFailed, "%v", err)
+		return "", reject(ReasonDownloadFailed, "%s: %v", srcName, err)
 	}
 	defer f.Close()
-	// fstat sul descrittore aperto: chiude la finestra fra Lstat e open.
 	fst, err := f.Stat()
 	if err != nil {
-		return "", reject(ReasonDownloadFailed, "%v", err)
+		return "", reject(ReasonDownloadFailed, "%s: %v", srcName, err)
 	}
 	if !fst.Mode().IsRegular() {
-		return "", reject(ReasonDownloadFailed, "%s non è un file regolare", filepath.Base(src))
+		return "", reject(ReasonDownloadFailed, "%s non è un file regolare (%s)", srcName, fst.Mode().Type())
 	}
 	if fst.Size() > max {
-		return "", reject(ReasonTooLarge, "%s: %d byte, oltre %d", filepath.Base(src), fst.Size(), max)
+		return "", reject(ReasonTooLarge, "%s: %d byte, oltre %d", srcName, fst.Size(), max)
 	}
-	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", reject(ReasonDownloadFailed, "%v", err)
+	if err := dst.Remove(dstName); err != nil {
+		return "", reject(ReasonDownloadFailed, "%s: %v", dstName, err)
 	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, mode)
+	out, err := dst.root.OpenFile(dstName, createFlags, mode)
 	if err != nil {
-		return "", reject(ReasonDownloadFailed, "%v", err)
+		return "", reject(ReasonDownloadFailed, "%s: %v", dstName, err)
 	}
 	fail := func(reason, format string, a ...any) (string, error) {
 		out.Close()
-		os.Remove(dst)
+		_ = dst.Remove(dstName)
 		return "", reject(reason, format, a...)
 	}
-	// Il modo si impone con fchmod: le unità girano con UMask=0077, e un .prev o un binario nati 0700
-	// non sarebbero eseguibili dall'utente del connettore (rilievo del banco, 17/11).
 	if err := out.Chmod(mode); err != nil {
-		return fail(ReasonDownloadFailed, "modo di %s: %v", filepath.Base(dst), err)
+		return fail(ReasonDownloadFailed, "modo di %s: %v", dstName, err)
 	}
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(out, h), io.LimitReader(f, max+1))
 	if err != nil {
-		return fail(ReasonDownloadFailed, "copia di %s: %v", filepath.Base(src), err)
+		return fail(ReasonDownloadFailed, "copia di %s: %v", srcName, err)
 	}
 	if n > max {
-		return fail(ReasonTooLarge, "%s oltre %d byte", filepath.Base(src), max)
+		return fail(ReasonTooLarge, "%s oltre %d byte", srcName, max)
 	}
 	if err := out.Sync(); err != nil {
-		return fail(ReasonDownloadFailed, "sync di %s: %v", filepath.Base(dst), err)
+		return fail(ReasonDownloadFailed, "sync di %s: %v", dstName, err)
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(dst)
-		return "", reject(ReasonDownloadFailed, "chiusura di %s: %v", filepath.Base(dst), err)
+		_ = dst.Remove(dstName)
+		return "", reject(ReasonDownloadFailed, "chiusura di %s: %v", dstName, err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
