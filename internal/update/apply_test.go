@@ -274,19 +274,26 @@ func withSHA(m protocol.UpdateManifest, body []byte) protocol.UpdateManifest {
 	return m
 }
 
-// Un symlink in update/ (verso un file di root, o verso il binario stesso) non si segue: la copia è
-// per contenuto e solo da file regolari, dal descrittore della cartella.
+// Un symlink in update/ (verso un file di root, o verso il binario stesso; assoluto o relativo che
+// resta dentro la cassetta) non si segue: la copia è per contenuto e solo da file regolari, dal
+// descrittore della cartella.
 func TestApplyNonSegueSymlinkNellaCassetta(t *testing.T) {
-	for _, name := range []string{FileBinary, FileManifest, FileSignature} {
+	for _, name := range []string{FileBinary, FileManifest, FileSignature, "relativo"} {
 		t.Run(name, func(t *testing.T) {
 			b := newBench(t)
 			body := []byte("binario nuovo 0.7.0")
 			b.prepare(t, body, newManifest("0.7.0"), nil)
 			target := filepath.Join(t.TempDir(), "file-di-root")
 			_ = os.WriteFile(target, []byte("segreto"), 0o600)
+			link := target
+			if name == "relativo" {
+				name = FileBinary
+				_ = os.WriteFile(filepath.Join(b.updateDir, "dentro"), []byte("segreto"), 0o600)
+				link = "dentro"
+			}
 			p := filepath.Join(b.updateDir, name)
 			_ = os.Remove(p)
-			if err := os.Symlink(target, p); err != nil {
+			if err := os.Symlink(link, p); err != nil {
 				t.Fatal(err)
 			}
 			err := Apply(b.cfg())

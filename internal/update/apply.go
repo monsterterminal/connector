@@ -408,6 +408,9 @@ func RollbackCheck(cfg ApplyConfig) (RollbackAction, error) {
 // impone con fchmod. Restituisce lo SHA-256 esadecimale di ciò che ha scritto. Un sorgente assente,
 // non regolare o illeggibile è download-failed: ciò che il connettore ha preparato non è utilizzabile.
 func copyEntry(src *Dir, srcName string, dst *Dir, dstName string, max int64, mode fs.FileMode) (string, error) {
+	if err := src.noSymlink(srcName); err != nil {
+		return "", reject(ReasonDownloadFailed, "%s: %v", srcName, err)
+	}
 	f, err := src.root.OpenFile(srcName, openFlags, 0)
 	if err != nil {
 		return "", reject(ReasonDownloadFailed, "%s: %v", srcName, err)

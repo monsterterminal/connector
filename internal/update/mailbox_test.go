@@ -128,6 +128,14 @@ func TestCassettaNonSegueLinkENonSiBlocca(t *testing.T) {
 	if _, _, err := mb.ReadOutcome(FileApplyRejected); err == nil {
 		t.Fatal("symlink letto come esito")
 	}
+	// Anche un symlink RELATIVO che resta dentro la cassetta (os.Root lo seguirebbe da sé).
+	_ = os.Remove(filepath.Join(upd, FileApplyRejected))
+	_ = os.WriteFile(filepath.Join(upd, "dentro.json"), []byte(`{"version":"0.7.0","reason":"bad-url"}`), 0o600)
+	_ = os.Symlink("dentro.json", filepath.Join(upd, FileApplyRejected))
+	if _, _, err := mb.ReadOutcome(FileApplyRejected); err == nil {
+		t.Fatal("symlink relativo letto come esito")
+	}
+	_ = os.Remove(filepath.Join(upd, FileApplyRejected))
 	_ = os.WriteFile(filepath.Join(upd, FileApplied), make([]byte, MaxManifestBytes+1), 0o600)
 	if _, _, err := mb.ReadApplied(); err == nil {
 		t.Fatal("file oltre il tetto letto")

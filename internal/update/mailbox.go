@@ -78,13 +78,26 @@ func OpenDir(path string) (*Dir, fs.FileInfo, error) {
 	return &Dir{root: root, Path: path}, st, nil
 }
 
+// noSymlink rifiuta una voce che è un symlink: os.Root segue da sé i link relativi che restano dentro
+// la radice (O_NOFOLLOW non basta), quindi si guarda PRIMA con Lstat dal descrittore. Fra Lstat e
+// apertura un link relativo può comparire, ma porta solo dentro la radice: per la cassetta è la
+// cartella dell'utente stesso, e ciò che si apre è comunque verificato con fstat.
+func (d *Dir) noSymlink(name string) error {
+	st, err := d.root.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if st.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%s è un symlink", name)
+	}
+	return nil
+}
+
 // OpenSub apre una sottocartella (un solo componente, mai un symlink) come Root e ne dà il fstat.
 func (d *Dir) OpenSub(name string) (*Dir, fs.FileInfo, error) {
-	f, err := d.root.OpenFile(name, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
-	if err != nil {
+	if err := d.noSymlink(name); err != nil {
 		return nil, nil, err
 	}
-	f.Close()
 	sub, err := d.root.OpenRoot(name)
 	if err != nil {
 		return nil, nil, err
@@ -127,6 +140,9 @@ func UID(st fs.FileInfo) int {
 // readSmall legge un file piccolo dalla cartella: aperto senza seguire né bloccarsi, deve essere un
 // file regolare entro max byte.
 func (d *Dir) readSmall(name string, max int64) ([]byte, error) {
+	if err := d.noSymlink(name); err != nil {
+		return nil, err
+	}
 	f, err := d.root.OpenFile(name, openFlags, 0)
 	if err != nil {
 		return nil, err
