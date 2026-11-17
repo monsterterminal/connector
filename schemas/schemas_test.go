@@ -21,9 +21,10 @@ import (
 // domande dell'agente) 0.6.0 (2026-10-27, ADR 0409 A1.2: i comandi del terminale unico) 0.7.0 (2026-10-27, ADR 0409 A1.5:
 // DragMeHere sugli host) e 0.8.0 (2026-10-30, ADR 0409 A2: un server non passa a un altro spazio di
 // lavoro; HOST_OTHER_TENANT e POST /v1/register/check) e 0.9.0 (2026-11-01, ADR 0409 A1.6: fitRows,
-// le righe del client sul telefono). Ogni test gira
+// le righe del client sul telefono) e 0.10.0 (2026-11-17, ADR 0438: aggiornamento automatico del
+// connettore; update.check e update.none, security nel manifest, autoUpdate in host-config). Ogni test gira
 // su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0"}
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -124,6 +125,18 @@ var wantMessages = map[string]map[string][]string{
 			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
 			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
 			"session.zoom", "sessions.list", "update.available", "welcome"},
+	},
+	// 0.10.0 (2026-11-17, ADR 0438): update.check dal connettore e update.none dal backend.
+	"0.10.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
+			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
+			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
+			"session.interrupt.result", "session.kill.result", "session.opened", "session.refresh.result",
+			"session.rename.result", "session.zoom.result", "sessions.list.result", "update.check", "update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "file.cancel",
+			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
+			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
+			"session.zoom", "sessions.list", "update.available", "update.none", "welcome"},
 	},
 }
 
@@ -870,4 +883,80 @@ func mustJSON(t *testing.T, doc map[string]any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// TestZeroDieciEstendeZeroNove: la 0.10.0 (ADR 0438, aggiornamento automatico del connettore) non toglie
+// nulla alla 0.9.0. Aggiunge due messaggi a corpo vuoto, update.check (connettore → backend) e
+// update.none (backend → connettore, re obbligatorio), il campo opzionale security nel manifest firmato
+// e il campo opzionale autoUpdate nella configurazione dell'host. Ogni altro file resta byte per byte
+// uguale; nessun campo nuovo è obbligatorio.
+func TestZeroDieciEstendeZeroNove(t *testing.T) {
+	old, cur := loadAll(t, "0.9.0"), loadAll(t, "0.10.0")
+	props := func(n map[string]any) map[string]any { p, _ := n["properties"].(map[string]any); return p }
+	required := func(doc map[string]any) []string {
+		var out []string
+		r, _ := doc["required"].([]any)
+		for _, k := range r {
+			out = append(out, k.(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	manifest, hostConfig := "objects/update-manifest.json", "objects/host-config.json"
+	if len(cur) != len(old)+2 {
+		t.Errorf("0.10.0 aggiunge %d file, attesi 2 (update.check, update.none)", len(cur)-len(old))
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.10.0", rel)
+			continue
+		}
+		switch rel {
+		case manifest, hostConfig:
+			campo := map[string]string{manifest: "security", hostConfig: "autoUpdate"}[rel]
+			op, cp := props(o), props(c)
+			for k, v := range op {
+				if string(mustJSON(t, map[string]any{"v": v})) != string(mustJSON(t, map[string]any{"v": cp[k]})) {
+					t.Errorf("%s: campo %s cambiato", rel, k)
+				}
+			}
+			if len(cp) != len(op)+1 {
+				t.Errorf("%s: attesi solo i campi di 0.9.0 più %s", rel, campo)
+			}
+			if f, _ := cp[campo].(map[string]any); f["type"] != "boolean" {
+				t.Errorf("%s: %s deve essere un boolean, trovato %v", rel, campo, cp[campo])
+			}
+			if !slices.Equal(required(o), required(c)) {
+				t.Errorf("%s: %s non deve diventare obbligatorio (required %v → %v)", rel, campo, required(o), required(c))
+			}
+			if c["additionalProperties"] != false {
+				t.Errorf("%s: resta un oggetto chiuso", rel)
+			}
+		default:
+			if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+				t.Errorf("%s: 0.10.0 cambia un file che doveva restare uguale alla 0.9.0", rel)
+			}
+		}
+	}
+	check := cur["messages/connector-to-backend/update.check.json"]
+	none := cur["messages/backend-to-connector/update.none.json"]
+	if check == nil || none == nil {
+		t.Fatal("update.check o update.none mancano")
+	}
+	for rel, doc := range map[string]map[string]any{"update.check": check, "update.none": none} {
+		body, _ := props(doc)["body"].(map[string]any)
+		if body == nil || len(props(body)) != 0 || body["additionalProperties"] != false {
+			t.Errorf("%s: il corpo deve essere un oggetto chiuso e vuoto, trovato %v", rel, body)
+		}
+	}
+	if slices.Contains(required(check), "re") {
+		t.Error("update.check: re non è obbligatorio (è una richiesta)")
+	}
+	if !slices.Contains(required(none), "re") {
+		t.Error("update.none: re obbligatorio (risponde a update.check)")
+	}
+	if slices.Contains(required(cur["messages/backend-to-connector/update.available.json"]), "re") {
+		t.Error("update.available: re resta facoltativo, il backend lo manda anche senza richiesta (ADR 0438 D4)")
+	}
 }

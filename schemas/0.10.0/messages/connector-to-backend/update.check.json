@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.10.0/messages/connector-to-backend/update.check.json",
+  "title": "update.check",
+  "description": "Richiesta di aggiornamento (§1.10, ADR 0438 D4): subito dopo welcome e poi ogni 6 ore con scarto casuale. Il backend risponde, con re, update.available oppure update.none. Il corpo è vuoto: versione, sistema e architettura sono quelli di hello",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "update.check"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {},
+      "required": []
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}
