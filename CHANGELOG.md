@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.1 — 2026-11-23
+
+Ottavo rilascio firmato (chiave `mt-updates-2026`). Protocollo 1 e schemi 0.10.0 invariati;
+`packaging/release.json` resta `{"security": false}`. **Nessuna modifica al codice**: è il rilascio con
+cui si collauda dal vero l'aggiornamento automatico di ADR 0438, da 0.7.0 a 0.7.1 allo stadio `prova`
+su un host di prova, compreso il ritorno alla versione precedente quando il connettore nuovo non si
+collega entro cinque minuti. Un host a 0.7.0 che lo riceve non cambia comportamento.
+
 ## v0.7.0 — 2026-11-17
 
 Settimo rilascio firmato (chiave `mt-updates-2026`). Protocollo sempre 1; il connettore implementa gli
