@@ -89,6 +89,7 @@ rc() { cat "$tmp/st-$1/rc"; }
 out() { cat "$tmp/st-$1/out"; }
 prompts() { cat "$tmp/st-$1/prompts"; }
 mkdir -p "$tmp/home"
+# shellcheck disable=SC2034  # usata dentro le stringhe passate a eval in check
 SIG=$tmp/recipes/opencode-amd64/1.json.sig
 
 corsa ok "$PASSPHRASE" opencode-amd64 1 --key "$tmp/k.key" --recipes-dir "$tmp/recipes"
