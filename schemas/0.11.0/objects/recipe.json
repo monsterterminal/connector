@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.11.0/objects/recipe.json",
+  "title": "Ricetta del catalogo",
+  "description": "Contratto tra catalogo e connettore (§1.9, ADR 0410 D4, A4). Firmata con la chiave delle ricette mt-recipes-2026 sulla forma canonica. Dalla 0.11.0 (ADR 0410 A4): expiresAt e source obbligatori, passo fetch accanto a run, adapter.kind local-api.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipeId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "recipeVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expiresAt": {
+      "$ref": "../common.json#/$defs/timestamp",
+      "description": "Scadenza della ricetta, dentro la firma (§1.9, ADR 0410 A4): oltre questo istante il connettore rifiuta con expired. Tetto di 180 giorni dalla firma, deciso da chi firma."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Canale ufficiale da cui viene l'agente, dentro la firma (§1.9, ADR 0410 A4): npm (pacchetto@versione) oppure release (URL dell'artefatto versionato del vendor).",
+      "properties": {
+        "channel": {
+          "enum": [
+            "npm",
+            "release"
+          ]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "channel",
+        "ref"
+      ]
+    },
+    "agent": {
+      "$ref": "../common.json#/$defs/agentId"
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "os": {
+            "$ref": "../common.json#/$defs/os"
+          },
+          "arch": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "../common.json#/$defs/arch"
+            }
+          },
+          "distro": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "../common.json#/$defs/distro"
+            }
+          }
+        },
+        "required": [
+          "os",
+          "arch",
+          "distro"
+        ]
+      }
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "enum": [
+              "command"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._+-]{1,64}$"
+          },
+          "minVersion": {
+            "$ref": "../common.json#/$defs/semver"
+          }
+        },
+        "required": [
+          "check",
+          "name"
+        ]
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "description": "Passi eseguiti uno alla volta, in ordine; ognuno è run oppure fetch, mai entrambi (§1.9, ADR 0410 A4).",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Passo run: vettore di argomenti eseguito senza shell; {work} all'inizio di un argomento è la cartella di lavoro dell'installazione (§1.9, ADR 0410 A4).",
+            "properties": {
+              "run": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "description": "vettore di argomenti, eseguito senza shell"
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": [
+              "run",
+              "timeoutSeconds"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Passo fetch: scarica un artefatto versionato in https, ne verifica lo sha256 e lo salva come dest nella cartella di lavoro state-dir/catalog/work/<installId>/; tetto 256 MiB; sha256 diverso = failed con checksum-mismatch (§1.9, ADR 0410 A4).",
+            "properties": {
+              "fetch": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "pattern": "^https://",
+                    "maxLength": 2048,
+                    "description": "solo https, con la versione nel percorso: mai un URL che cambia contenuto a parità di indirizzo"
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "dest": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$",
+                    "description": "nome di file nella cartella di lavoro, senza / né .."
+                  },
+                  "executable": {
+                    "type": "boolean",
+                    "description": "true = il file scaricato riceve il bit di esecuzione; assente = false"
+                  }
+                },
+                "required": [
+                  "url",
+                  "sha256",
+                  "dest"
+                ]
+              },
+              "timeoutSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": [
+              "fetch",
+              "timeoutSeconds"
+            ]
+          }
+        ]
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instructions": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "instructions"
+      ]
+    },
+    "start": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "hooks",
+            "output-patterns",
+            "generic",
+            "local-api"
+          ]
+        },
+        "id": {
+          "$ref": "../common.json#/$defs/agentId"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    }
+  },
+  "required": [
+    "recipeId",
+    "recipeVersion",
+    "expiresAt",
+    "source",
+    "agent",
+    "platforms",
+    "requires",
+    "steps",
+    "auth",
+    "start",
+    "adapter"
+  ]
+}

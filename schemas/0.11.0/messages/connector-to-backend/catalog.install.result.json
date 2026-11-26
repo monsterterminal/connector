@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.11.0/messages/connector-to-backend/catalog.install.result.json",
+  "title": "catalog.install.result",
+  "description": "Esito di un'installazione dal catalogo (§1.9). Dalla 0.11.0 (ADR 0410 A4) reason è un enum chiuso, con detail e stepIndex opzionali.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "const": "catalog.install.result"
+    },
+    "id": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "re": {
+      "$ref": "../../common.json#/$defs/uuid"
+    },
+    "ts": {
+      "$ref": "../../common.json#/$defs/timestamp"
+    },
+    "body": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "installId": {
+          "$ref": "../../common.json#/$defs/uuid"
+        },
+        "outcome": {
+          "enum": [
+            "ok",
+            "failed",
+            "refused"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "disabled-on-host",
+            "signature-invalid",
+            "expired",
+            "platform-mismatch",
+            "requires-failed",
+            "downgrade",
+            "root-not-allowed",
+            "checksum-mismatch",
+            "step-failed",
+            "timeout",
+            "busy"
+          ],
+          "description": "Motivo chiuso dalla 0.11.0 (§1.9, ADR 0410 A4). Con refused: disabled-on-host, signature-invalid, expired, platform-mismatch, requires-failed, downgrade, root-not-allowed, busy. Con failed: checksum-mismatch, step-failed, timeout. Assente con ok."
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Dettaglio del motivo, es. per requires-failed il requisito e la versione trovata (node >= 22.0.0, trovato 18.19.0)"
+        },
+        "stepIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31,
+          "description": "Indice da 0 in steps[] del passo che ha fallito, per checksum-mismatch, step-failed e timeout (progress.step invece conta da 1)"
+        },
+        "logTail": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      },
+      "required": [
+        "installId",
+        "outcome"
+      ]
+    }
+  },
+  "required": [
+    "type",
+    "id",
+    "ts",
+    "body"
+  ]
+}

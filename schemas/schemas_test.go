@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -22,9 +23,11 @@ import (
 // DragMeHere sugli host) e 0.8.0 (2026-10-30, ADR 0409 A2: un server non passa a un altro spazio di
 // lavoro; HOST_OTHER_TENANT e POST /v1/register/check) e 0.9.0 (2026-11-01, ADR 0409 A1.6: fitRows,
 // le righe del client sul telefono) e 0.10.0 (2026-11-17, ADR 0438: aggiornamento automatico del
-// connettore; update.check e update.none, security nel manifest, autoUpdate in host-config). Ogni test gira
-// su ognuna.
-var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0"}
+// connettore; update.check e update.none, security nel manifest, autoUpdate in host-config) e 0.11.0
+// (2026-11-26, ADR 0410 A4: catalogo di ricette firmate; expiresAt, source e passo fetch nella ricetta,
+// motivi chiusi di catalog.install.result). Ogni test gira su ognuna.
+var versions = []string{"0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0", "0.10.0",
+	"0.11.0"}
 
 func baseID(version string) string {
 	return "https://monsterterminal.com/schemas/connector/" + version + "/"
@@ -128,6 +131,18 @@ var wantMessages = map[string]map[string][]string{
 	},
 	// 0.10.0 (2026-11-17, ADR 0438): update.check dal connettore e update.none dal backend.
 	"0.10.0": {
+		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
+			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
+			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
+			"session.interrupt.result", "session.kill.result", "session.opened", "session.refresh.result",
+			"session.rename.result", "session.zoom.result", "sessions.list.result", "update.check", "update.result"},
+		"backend-to-connector": {"catalog.install", "config.update", "error", "events.ack", "file.cancel",
+			"file.put", "request.respond", "session.buffer", "session.capture", "session.close", "session.config",
+			"session.interrupt", "session.kill", "session.open", "session.refresh", "session.rename", "session.resize",
+			"session.zoom", "sessions.list", "update.available", "update.none", "welcome"},
+	},
+	// 0.11.0 (2026-11-26, ADR 0410 A4): nessun messaggio nuovo; cambiano la ricetta e l'esito del catalogo.
+	"0.11.0": {
 		"connector-to-backend": {"catalog.install.progress", "catalog.install.result", "error",
 			"event", "file.cancel.result", "file.put.result", "hello", "request.closed", "request.context",
 			"request.respond.result", "session.buffer.result", "session.capture.result", "session.closed",
@@ -958,5 +973,205 @@ func TestZeroDieciEstendeZeroNove(t *testing.T) {
 	}
 	if slices.Contains(required(cur["messages/backend-to-connector/update.available.json"]), "re") {
 		t.Error("update.available: re resta facoltativo, il backend lo manda anche senza richiesta (ADR 0438 D4)")
+	}
+}
+
+// Motivi di catalog.install.result, ADR 0410 A4 (decisione 4 con la modifica del BOSS del 2026-11-26,
+// checksum-mismatch), spec §1.9. L'ordine è quello del contratto.
+var wantCatalogReasons = []string{"disabled-on-host", "signature-invalid", "expired", "platform-mismatch",
+	"requires-failed", "downgrade", "root-not-allowed", "checksum-mismatch", "step-failed", "timeout", "busy"}
+
+// TestZeroUndiciEstendeZeroDieci: la 0.11.0 (ADR 0410 A4, catalogo di ricette firmate) non toglie nulla
+// alla 0.10.0 e non aggiunge file. Cambiano due file soli:
+//
+//   - objects/recipe.json: expiresAt e source nuovi e OBBLIGATORI, ogni passo diventa oneOf run|fetch,
+//     maxItems 32 sui passi, adapter.kind con local-api;
+//   - catalog.install.result.json: reason da stringa libera a enum chiuso, detail e stepIndex opzionali.
+//
+// expiresAt/source obbligatori e l'enum di reason sono le sole STRETTE della storia degli schemi, e sono
+// ammesse perché nessuna ricetta e nessun esito esistono in produzione: il backend non ha mai inviato un
+// catalog.install e nessun connettore ha mai risposto con un catalog.install.result (README della 0.11.0).
+// Ogni altro file resta uguale alla 0.10.0, salvo $id.
+func TestZeroUndiciEstendeZeroDieci(t *testing.T) {
+	old, cur := loadAll(t, "0.10.0"), loadAll(t, "0.11.0")
+	props := func(n map[string]any) map[string]any { p, _ := n["properties"].(map[string]any); return p }
+	same := func(a, b any) bool {
+		return string(mustJSON(t, map[string]any{"v": a})) == string(mustJSON(t, map[string]any{"v": b}))
+	}
+	required := func(doc map[string]any) []string {
+		var out []string
+		r, _ := doc["required"].([]any)
+		for _, k := range r {
+			out = append(out, k.(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	recipe, result := "objects/recipe.json", "messages/connector-to-backend/catalog.install.result.json"
+	if len(cur) != len(old) {
+		t.Errorf("0.11.0 ha %d file, la 0.10.0 %d: nessun file nuovo atteso", len(cur), len(old))
+	}
+	for rel, o := range old {
+		c, ok := cur[rel]
+		if !ok {
+			t.Errorf("%s: sparito in 0.11.0", rel)
+			continue
+		}
+		if rel == recipe || rel == result {
+			continue
+		}
+		if string(mustJSON(t, o)) != string(mustJSON(t, c)) {
+			t.Errorf("%s: 0.11.0 cambia un file che doveva restare uguale alla 0.10.0", rel)
+		}
+	}
+
+	// Ricetta.
+	or, cr := old[recipe], cur[recipe]
+	if cr["additionalProperties"] != false {
+		t.Error("recipe: resta un oggetto chiuso")
+	}
+	op, cp := props(or), props(cr)
+	for k, v := range op {
+		switch k {
+		case "steps", "adapter":
+			continue // controllati sotto
+		}
+		if !same(v, cp[k]) {
+			t.Errorf("recipe: campo %s cambiato", k)
+		}
+	}
+	if len(cp) != len(op)+2 {
+		t.Errorf("recipe: attesi i campi della 0.10.0 più expiresAt e source, trovati %d", len(cp))
+	}
+	wantReq := append(required(or), "expiresAt", "source")
+	sort.Strings(wantReq)
+	if got := required(cr); !slices.Equal(got, wantReq) {
+		t.Errorf("recipe: required %v, attesi %v (eccezione dichiarata: expiresAt e source obbligatori)", got, wantReq)
+	}
+	if e, _ := cp["expiresAt"].(map[string]any); e["$ref"] != "../common.json#/$defs/timestamp" {
+		t.Errorf("recipe: expiresAt deve essere un timestamp di common.json, trovato %v", cp["expiresAt"])
+	}
+	src, _ := cp["source"].(map[string]any)
+	if src["additionalProperties"] != false || !slices.Equal(required(src), []string{"channel", "ref"}) {
+		t.Errorf("recipe: source chiuso con channel e ref obbligatori, trovato %v", src)
+	}
+	if ch, _ := props(src)["channel"].(map[string]any); !same(ch["enum"], []any{"npm", "release"}) {
+		t.Errorf("recipe: source.channel deve essere [npm release], trovato %v", ch)
+	}
+	if ref, _ := props(src)["ref"].(map[string]any); ref["minLength"] != float64(1) || ref["maxLength"] != float64(512) {
+		t.Errorf("recipe: source.ref 1..512, trovato %v", ref)
+	}
+	ok := func(name string, re *regexp.Regexp, s string, want bool) {
+		if re.MatchString(s) != want {
+			t.Errorf("recipe: %s %q atteso valido=%v", name, s, want)
+		}
+	}
+	steps, _ := cp["steps"].(map[string]any)
+	if steps["maxItems"] != float64(32) || steps["minItems"] != float64(1) {
+		t.Errorf("recipe: passi 1..32, trovato %v..%v", steps["minItems"], steps["maxItems"])
+	}
+	items, _ := steps["items"].(map[string]any)
+	branches, _ := items["oneOf"].([]any)
+	if len(branches) != 2 {
+		t.Fatalf("recipe: ogni passo è oneOf di due forme (run, fetch), trovato %v", items)
+	}
+	runStep, fetchStep := branches[0].(map[string]any), branches[1].(map[string]any)
+	oldStep, _ := op["steps"].(map[string]any)["items"].(map[string]any)
+	if !same(props(oldStep), props(runStep)) || !same(oldStep["required"], runStep["required"]) {
+		t.Error("recipe: il passo run deve restare quello della 0.10.0")
+	}
+	for i, b := range []map[string]any{runStep, fetchStep} {
+		if b["additionalProperties"] != false {
+			t.Errorf("recipe: forma %d del passo non chiusa: un passo con run E fetch sarebbe valido", i)
+		}
+	}
+	if !slices.Equal(required(fetchStep), []string{"fetch", "timeoutSeconds"}) {
+		t.Errorf("recipe: passo fetch con fetch e timeoutSeconds obbligatori, trovato %v", required(fetchStep))
+	}
+	if !same(props(fetchStep)["timeoutSeconds"], props(runStep)["timeoutSeconds"]) {
+		t.Error("recipe: timeoutSeconds uguale nelle due forme")
+	}
+	fetch, _ := props(fetchStep)["fetch"].(map[string]any)
+	if fetch["additionalProperties"] != false || !slices.Equal(required(fetch), []string{"dest", "sha256", "url"}) {
+		t.Errorf("recipe: fetch chiuso con url, sha256 e dest obbligatori, trovato %v", fetch)
+	}
+	fp := props(fetch)
+	if len(fp) != 4 {
+		t.Errorf("recipe: fetch ha url, sha256, dest, executable; trovati %d campi", len(fp))
+	}
+	if e, _ := fp["executable"].(map[string]any); e["type"] != "boolean" {
+		t.Error("recipe: fetch.executable è un boolean")
+	}
+	pattern := func(field string) *regexp.Regexp {
+		f, _ := fp[field].(map[string]any)
+		s, _ := f["pattern"].(string)
+		return regexp.MustCompile(s)
+	}
+	url, sha, dest := pattern("url"), pattern("sha256"), pattern("dest")
+	ok("url", url, "https://registry.npmjs.org/x/-/x-1.0.0.tgz", true)
+	ok("url", url, "http://example.com/x-1.0.0", false)
+	ok("url", url, "file:///etc/passwd", false)
+	ok("sha256", sha, strings.Repeat("a", 64), true)
+	ok("sha256", sha, strings.Repeat("A", 64), false)
+	ok("sha256", sha, strings.Repeat("a", 63), false)
+	ok("dest", dest, "opencode-linux-x64.tar.gz", true)
+	ok("dest", dest, "a/b", false)
+	ok("dest", dest, "..", false)
+	ok("dest", dest, ".profile", false)
+	ok("dest", dest, "../x", false)
+	ok("dest", dest, "", false)
+	oa, ca := props(op["adapter"].(map[string]any)), props(cp["adapter"].(map[string]any))
+	if !same(oa["id"], ca["id"]) {
+		t.Error("recipe: adapter.id cambiato")
+	}
+	if k, _ := ca["kind"].(map[string]any); !same(k["enum"], []any{"hooks", "output-patterns", "generic", "local-api"}) {
+		t.Errorf("recipe: adapter.kind = 0.10.0 + local-api, trovato %v", k)
+	}
+
+	// Esito.
+	ob, cb := props(props(old[result])["body"].(map[string]any)), props(props(cur[result])["body"].(map[string]any))
+	for k, v := range ob {
+		if k == "reason" {
+			continue
+		}
+		if !same(v, cb[k]) {
+			t.Errorf("catalog.install.result: campo %s cambiato", k)
+		}
+	}
+	if len(cb) != len(ob)+2 {
+		t.Errorf("catalog.install.result: attesi i campi della 0.10.0 più detail e stepIndex")
+	}
+	if !slices.Equal(required(props(old[result])["body"].(map[string]any)),
+		required(props(cur[result])["body"].(map[string]any))) {
+		t.Error("catalog.install.result: nessun campo nuovo obbligatorio")
+	}
+	if d, _ := cb["detail"].(map[string]any); d["type"] != "string" || d["maxLength"] != float64(512) {
+		t.Errorf("catalog.install.result: detail stringa ≤ 512, trovato %v", d)
+	}
+	if s, _ := cb["stepIndex"].(map[string]any); s["type"] != "integer" || s["minimum"] != float64(0) {
+		t.Errorf("catalog.install.result: stepIndex intero ≥ 0, trovato %v", s)
+	}
+	if l, _ := cb["logTail"].(map[string]any); l["maxLength"] != float64(8192) {
+		t.Error("catalog.install.result: logTail resta ≤ 8192")
+	}
+}
+
+// TestMotiviDelCatalogoChiusi — [#26 asse B] ADR 0410 A4, spec §1.9: l'enum di reason in
+// catalog.install.result 0.11.0 è ESATTAMENTE l'elenco del contratto, nello stesso ordine. Un motivo in
+// più o in meno qui deve passare da un amendment, non da una modifica allo schema.
+func TestMotiviDelCatalogoChiusi(t *testing.T) {
+	cur := loadAll(t, "0.11.0")
+	body := cur["messages/connector-to-backend/catalog.install.result.json"]["properties"].(map[string]any)["body"].(map[string]any)
+	reason, _ := body["properties"].(map[string]any)["reason"].(map[string]any)
+	enum, _ := reason["enum"].([]any)
+	var got []string
+	for _, r := range enum {
+		got = append(got, r.(string))
+	}
+	if !slices.Equal(got, wantCatalogReasons) {
+		t.Errorf("reason %v, attesi %v", got, wantCatalogReasons)
+	}
+	if _, free := reason["type"]; free {
+		t.Error("reason non deve restare una stringa libera accanto all'enum")
 	}
 }

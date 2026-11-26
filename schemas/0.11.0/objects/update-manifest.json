@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://monsterterminal.com/schemas/connector/0.11.0/objects/update-manifest.json",
+  "title": "Manifest di aggiornamento",
+  "description": "Firmato con la chiave degli aggiornamenti sulla forma canonica (§1.10). Dalla 0.10.0 (ADR 0438 D2) security opzionale: true = aggiornamento di sicurezza, deciso da chi firma; ignora l'interruttore autoUpdate di host-config, mai il file locale dell'host (auto_update = false resta assoluto)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "$ref": "../common.json#/$defs/semver"
+    },
+    "os": {
+      "$ref": "../common.json#/$defs/os"
+    },
+    "arch": {
+      "$ref": "../common.json#/$defs/arch"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "minProtocol": {
+      "$ref": "../common.json#/$defs/protocol"
+    },
+    "security": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "version",
+    "os",
+    "arch",
+    "url",
+    "sha256",
+    "minProtocol"
+  ]
+}
