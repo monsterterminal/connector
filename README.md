@@ -199,7 +199,9 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/fakeserver/` | backend finto che parla il protocollo come il gateway vero, solo per i test |
 | `schemas/<versione>/` | JSON Schema del protocollo, fonte unica del contratto |
 | `packaging/` | script di installazione (`install.sh`) e il suo banco di prova |
-| `scripts/` | firma e pubblicazione dei rilasci |
+| `cmd/mt-valida-ricetta/` | validatore delle ricette del catalogo prima della firma (schema, forma canonica, scadenza, source) |
+| `recipes/` | ricette firmate del catalogo, `recipes/<recipeId>/<recipeVersion>.json` + `.sig` (ADR 0410 A4); vedi `recipes/README.md` |
+| `scripts/` | firma e pubblicazione dei rilasci; validazione e firma delle ricette |
 
 Le cartelle si creano quando arriva il codice che ci va dentro.
 
