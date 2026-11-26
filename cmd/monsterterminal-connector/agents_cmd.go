@@ -282,11 +282,15 @@ func (a app) startAgents(ctx context.Context, log *slog.Logger, j *journal.Journ
 // capabilities dichiarate in hello (§1.6): `hooks` se gli hook di Claude Code sono installati;
 // `auto-update` sempre, dalla v0.7.0 (ADR 0438): il connettore sa chiedere e preparare un
 // aggiornamento. Che poi lo applichi lo dicono gli interruttori (autoUpdateEnabled in hello e
-// l'interruttore del backend), non la capacità.
-func (a app) capabilities() []string {
+// l'interruttore del backend), non la capacità. `catalog-install` dalla v0.8.0 (ADR 0410 A4, §1.11):
+// solo con catalog_install=yes nel file dell'host.
+func (a app) capabilities(catalogInstall bool) []string {
 	caps := []string{}
 	if home, err := a.home(); err == nil && agents.Installed(agents.SettingsPath(home)) {
 		caps = append(caps, "hooks")
+	}
+	if catalogInstall {
+		caps = append(caps, protocol.CapabilityCatalogInstall)
 	}
 	return append(caps, "auto-update")
 }

@@ -109,6 +109,8 @@ type Config struct {
 	Files Files
 	// Updates è l'aggiornamento automatico (ADR 0438); nil = nessun aggiornamento.
 	Updates Updates
+	// Catalog esegue le ricette del catalogo (ADR 0410 A4); nil = catalog.install riceve TYPE_UNKNOWN.
+	Catalog Catalog
 	// Coda dell'output del terminale: soglie della contropressione e accorpamento (§1.7).
 	OutputHighWater, OutputLowWater int
 	OutputFlushDelay                time.Duration
@@ -363,6 +365,12 @@ func session(ctx context.Context, cfg *Config) (welcomed bool, err error) {
 		defer cfg.Updates.Detach()
 	}
 
+	if cfg.Catalog != nil {
+		// Dopo welcome: gli esiti di installazioni finite durante una caduta si rimandano ora.
+		cfg.Catalog.Attach(&termOut{ctx: sctx, cfg: cfg, w: w})
+		defer cfg.Catalog.Detach()
+	}
+
 	st := newSyncState()
 	sendErr := make(chan error, 1)
 	if cfg.Events != nil {
@@ -461,6 +469,12 @@ func handleMessage(ctx context.Context, cfg *Config, w *writer, st *syncState, d
 		}
 	case protocol.TypeWelcome:
 		// Un welcome ripetuto non cambia nulla.
+	case protocol.TypeCatalogInstall:
+		// Ricetta firmata del catalogo (§1.9, ADR 0410 A4): verifiche e passi girano fuori da questo
+		// ciclo. Senza catalogo il tipo non è supportato, come prima della v0.8.0.
+		if cfg.Catalog == nil || !cfg.Catalog.Handle(env) {
+			reply(ctx, cfg, w, env.ID, protocol.CodeTypeUnknown, "tipo non supportato da questa versione: "+env.Type)
+		}
 	default:
 		// Tipi non ancora implementati in questa fetta: il connettore non li ha dichiarati nelle
 		// capability di hello, quindi il backend non dovrebbe mandarli.

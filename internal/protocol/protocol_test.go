@@ -119,6 +119,11 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 		{"messages/connector-to-backend/update.check.json", struct{}{}},
 		{"messages/backend-to-connector/update.none.json", struct{}{}},
 		{"objects/update-manifest.json", UpdateManifest{Security: new(bool)}},
+		// Schemi 0.11.0 (ADR 0410 A4): il catalogo di ricette firmate.
+		{"messages/backend-to-connector/catalog.install.json", CatalogInstall{Recipe: json.RawMessage(`{}`)}},
+		{"messages/connector-to-backend/catalog.install.progress.json", CatalogInstallProgress{}},
+		{"messages/connector-to-backend/catalog.install.result.json", CatalogInstallResult{Reason: "x", Detail: "x", StepIndex: new(int), LogTail: "x"}},
+		{"events/catalog.installed.json", CatalogInstalled{}},
 	}
 	for _, c := range cases {
 		if c.value == nil {
@@ -225,7 +230,7 @@ func TestCorrispondenzaConGliSchemi(t *testing.T) {
 	if defs["signature"].(map[string]any)["pattern"].(string) != signatureRE.String() {
 		t.Errorf("forma della firma: schema %v, Go %s", defs["signature"], signatureRE)
 	}
-	if Version != 1 || SchemaVersion != "0.10.0" {
+	if Version != 1 || SchemaVersion != "0.11.0" {
 		t.Errorf("versioni inattese: protocollo %d, schemi %s", Version, SchemaVersion)
 	}
 }

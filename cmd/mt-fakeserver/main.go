@@ -21,6 +21,11 @@
 //	                                                         anche in config.update subito; senza value
 //	                                                         il campo torna assente (acceso)
 //	{"action":"session.open","session":"nome"}               session.open (crea) su tutti gli host
+//	{"action":"catalog.install","recipe":{…},"signature":"base64","installId":"uuid"}
+//	                                                         catalog.install a tutti gli host (ADR 0410
+//	                                                         A4): la ricetta nei byte firmati, compatti;
+//	                                                         senza installId se ne conia uno. Progresso,
+//	                                                         esiti e catalog.installed nello status-file
 package main
 
 import (
@@ -81,7 +86,11 @@ type status struct {
 	UpdateNones   int                           `json:"updateNones"`
 	UpdateResults []protocol.UpdateResult       `json:"updateResults"`
 	Restarts      []protocol.ConnectorRestarted `json:"restarts"`
-	CommandsRun   int                           `json:"commandsRun"`
+	// Catalogo (ADR 0410 A4): progresso, esiti ed eventi catalog.installed degli host.
+	CatalogProgress  []protocol.CatalogInstallProgress `json:"catalogProgress"`
+	CatalogResults   []protocol.CatalogInstallResult   `json:"catalogResults"`
+	CatalogInstalled []protocol.CatalogInstalled       `json:"catalogInstalled"`
+	CommandsRun      int                               `json:"commandsRun"`
 }
 
 // command è un file di comando del banco (-command-dir).
@@ -91,6 +100,9 @@ type command struct {
 	Signature string                   `json:"signature,omitempty"`
 	Value     *bool                    `json:"value,omitempty"`
 	Session   string                   `json:"session,omitempty"`
+	// catalog.install: la ricetta nei byte firmati (compatti, chiavi ordinate) e l'id dell'installazione.
+	Recipe    json.RawMessage `json:"recipe,omitempty"`
+	InstallID string          `json:"installId,omitempty"`
 }
 
 func main() {
@@ -322,6 +334,16 @@ func (w *statusWriter) runCommand(raw []byte) error {
 		}
 		n := w.s.OpenSessionAll(c.Session)
 		fmt.Fprintf(os.Stderr, "mt-fakeserver: session.open %s a %d host\n", c.Session, n)
+	case "catalog.install":
+		if len(c.Recipe) == 0 || c.Signature == "" {
+			return errors.New("catalog.install senza recipe o signature")
+		}
+		id := c.InstallID
+		if id == "" {
+			id = protocol.NewUUID()
+		}
+		n := w.s.CatalogInstallAll(id, c.Recipe, c.Signature)
+		fmt.Fprintf(os.Stderr, "mt-fakeserver: catalog.install %s a %d host\n", id, n)
 	default:
 		return fmt.Errorf("azione sconosciuta %q", c.Action)
 	}
@@ -358,6 +380,15 @@ func (w *statusWriter) write() error {
 	}
 	if w.st.Restarts = w.s.Restarts(); w.st.Restarts == nil {
 		w.st.Restarts = []protocol.ConnectorRestarted{}
+	}
+	if w.st.CatalogProgress = w.s.CatalogProgress(); w.st.CatalogProgress == nil {
+		w.st.CatalogProgress = []protocol.CatalogInstallProgress{}
+	}
+	if w.st.CatalogResults = w.s.CatalogResults(); w.st.CatalogResults == nil {
+		w.st.CatalogResults = []protocol.CatalogInstallResult{}
+	}
+	if w.st.CatalogInstalled = w.s.CatalogInstalled(); w.st.CatalogInstalled == nil {
+		w.st.CatalogInstalled = []protocol.CatalogInstalled{}
 	}
 	w.st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if w.path == "" {

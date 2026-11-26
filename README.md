@@ -15,8 +15,9 @@ anche quando il collegamento cade.
 > con updater root che riverifica e ritorno alla versione precedente (ADR 0438, vedi
 > [Aggiornare](#aggiornare)).
 >
-> Cosa non c'è ancora: il catalogo delle ricette di installazione degli agenti e gli adattatori per
-> agenti diversi da Claude Code (Codex CLI è il prossimo).
+> In preparazione per la v0.8.0: il **catalogo di ricette firmate** (ADR 0410 A4), cioè l'installazione
+> di Claude Code, Codex e OpenCode confermata dal pannello, e il rilevamento degli agenti in `hello`.
+> Cosa non c'è ancora: gli adattatori per agenti diversi da Claude Code (Codex CLI è il prossimo).
 
 ## Uso
 
@@ -33,6 +34,10 @@ monsterterminal-connector run
 # e aggiunge i propri hook nelle impostazioni dell'utente (~/.claude/settings.json); -yes senza terminale
 monsterterminal-connector hooks install
 monsterterminal-connector hooks remove
+# aiutanti delle ricette del catalogo (v0.8.0): li chiamano i passi run, senza shell; le cartelle
+# relative si intendono dalla home dell'utente del connettore (senza shell `~` non si espande)
+monsterterminal-connector catalog path-add .local/opencode
+monsterterminal-connector catalog extract /percorso/archivio.tar.gz .local/opencode
 # solo dalle unità systemd, come root (ADR 0438): mai a mano
 monsterterminal-connector apply-update -state-dir /var/lib/monsterterminal
 monsterterminal-connector.prev rollback-check -state-dir /var/lib/monsterterminal
@@ -148,6 +153,13 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
   `.prev` se la versione nuova non resta collegata almeno 30 secondi. Esiti in `update.result`:
   `ok`, `failed` con motivo, `skipped` (`host-config`, `tenant-switch`), `rolled-back` (`no-welcome`).
   `hello.capabilities` dichiara `auto-update`. Dettagli in [`SECURITY.md`](SECURITY.md).
+- **Catalogo** (schemi 0.11.0, ADR 0410 A4, v0.8.0 in preparazione): `catalog.install` si verifica
+  nell'ordine di §1.9 (interruttore dell'host, firma con `mt-recipes-2026` sui byte ricevuti, scadenza,
+  piattaforma, root, requisiti, downgrade da `state-dir/catalog/<recipeId>.json`, una installazione alla
+  volta) e si esegue con l'utente del connettore, senza shell; `catalog.install.progress` dopo ogni passo
+  e `catalog.install.result` con i motivi chiusi; a esito `ok` l'evento `catalog.installed`.
+  `hello.capabilities` dichiara `catalog-install` solo con `catalog_install=yes`; `hello.agents` porta
+  gli agenti rilevati a ogni `hello`.
 
 ## Riferimenti
 
@@ -182,14 +194,14 @@ non valido — ricollegarsi non serve, occorre una nuova registrazione, e il ser
 | `internal/hostinfo/` | dati dell'host dichiarati alla registrazione |
 | `internal/hostconf/` | lettura di `connector.conf` (scelte del cliente) |
 | `internal/signing/` | verifica Ed25519 con le chiavi pubbliche incluse nel binario |
-| `internal/catalog/` | esecuzione delle ricette firmate (prevista, non ancora presente) |
+| `internal/catalog/` | ricette firmate del catalogo: verifiche, passi, file di stato, `catalog extract` e `path-add` (ADR 0410 A4) |
 | `internal/update/` | aggiornamento firmato: verifica, download, cassetta delle lettere, updater root e ritorno (ADR 0438) |
 | `internal/fakeserver/` | backend finto che parla il protocollo come il gateway vero, solo per i test |
 | `schemas/<versione>/` | JSON Schema del protocollo, fonte unica del contratto |
 | `packaging/` | script di installazione (`install.sh`) e il suo banco di prova |
 | `scripts/` | firma e pubblicazione dei rilasci |
 
-Le cartelle si creano quando arriva il codice che ci va dentro: oggi manca solo `internal/catalog`.
+Le cartelle si creano quando arriva il codice che ci va dentro.
 
 ## Test
 

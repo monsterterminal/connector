@@ -65,6 +65,9 @@ type host struct {
 	// aggiornamento automatico (ADR 0438)
 	updateResults []protocol.UpdateResult
 	updateChecks  int
+	// catalogo (ADR 0410 A4)
+	catalogProgress []protocol.CatalogInstallProgress
+	catalogResults  []protocol.CatalogInstallResult
 }
 
 // Offer è un update.available pronto da mandare: il manifest e la sua firma in base64.
@@ -808,6 +811,27 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		if env.Type == protocol.TypeCatalogInstallProgress || env.Type == protocol.TypeCatalogInstallResult {
+			// Catalogo (ADR 0410 A4): progresso ed esito decodificati in modo rigido, come il backend.
+			s.mu.Lock()
+			if env.Re != "" {
+				h.replies[env.Re] = env
+			}
+			if env.Type == protocol.TypeCatalogInstallProgress {
+				var p protocol.CatalogInstallProgress
+				if protocol.DecodeStrict(env.Body, &p) == nil {
+					h.catalogProgress = append(h.catalogProgress, p)
+				}
+			} else {
+				var r protocol.CatalogInstallResult
+				if protocol.DecodeStrict(env.Body, &r) == nil {
+					h.catalogResults = append(h.catalogResults, r)
+				}
+			}
+			s.mu.Unlock()
+			s.notify(env.Type)
+			continue
+		}
 		if env.Type != protocol.TypeEvent {
 			s.mu.Lock()
 			if env.Re != "" {
@@ -1007,6 +1031,24 @@ func (s *Server) Restarts() []protocol.ConnectorRestarted {
 	return out
 }
 
+// CatalogInstalled sono gli eventi catalog.installed ricevuti da tutti gli host (ADR 0410 A4).
+func (s *Server) CatalogInstalled() []protocol.CatalogInstalled {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.CatalogInstalled
+	for _, h := range s.hosts {
+		for _, ev := range h.events {
+			if ev.Kind == protocol.KindCatalogInstalled {
+				var d protocol.CatalogInstalled
+				if protocol.DecodeStrict(ev.Data, &d) == nil {
+					out = append(out, d)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (s *Server) conn(hostID string) *websocket.Conn {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1029,6 +1071,51 @@ func (s *Server) SendControl(hostID, typ string, body any) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return id, c.Write(ctx, websocket.MessageText, frame)
+}
+
+// CatalogInstallAll manda catalog.install a tutti gli host collegati, con la ricetta nei byte dati
+// (quelli firmati: encoding/json li ricopia tal quali se sono già compatti e senza <, >, &) e la
+// firma in base64; restituisce quanti lo hanno ricevuto.
+func (s *Server) CatalogInstallAll(installID string, recipe json.RawMessage, signature string) int {
+	s.mu.Lock()
+	var ids []string
+	for _, h := range s.hosts {
+		if h.conn != nil {
+			ids = append(ids, h.id)
+		}
+	}
+	s.mu.Unlock()
+	n := 0
+	for _, id := range ids {
+		body := protocol.CatalogInstall{InstallID: installID, Recipe: recipe, Signature: signature,
+			ApprovedBy: "6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5b", ApprovedAt: protocol.Timestamp(time.Now())}
+		if _, err := s.SendControl(id, protocol.TypeCatalogInstall, body); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// CatalogProgress e CatalogResults sono i catalog.install.progress e catalog.install.result di tutti
+// gli host, in ordine di arrivo per host.
+func (s *Server) CatalogProgress() []protocol.CatalogInstallProgress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.CatalogInstallProgress
+	for _, h := range s.hosts {
+		out = append(out, h.catalogProgress...)
+	}
+	return out
+}
+
+func (s *Server) CatalogResults() []protocol.CatalogInstallResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.CatalogInstallResult
+	for _, h := range s.hosts {
+		out = append(out, h.catalogResults...)
+	}
+	return out
 }
 
 // SendInput manda un frame di input (0x02) al canale.
