@@ -21,6 +21,14 @@ popolato.
   rilevamento degli agenti rifatto. Un esito non consegnato per una caduta si rimanda al collegamento
   successivo.
 - **Capacità `catalog-install`** in `hello.capabilities`, solo con `catalog_install=yes`.
+- **Ricette del catalogo nel repository** (`recipes/`, lotto L4 della Fase 3): bozze di Claude Code
+  2.1.332 (npm, `adapter: hooks`), Codex 0.172.0 e OpenCode 2.4.2 (artefatti versionati delle release
+  del vendor con `sha256`, una ricetta per architettura, `adapter: generic`), `expiresAt` a 180 giorni,
+  `source` dichiarato. Non ancora firmate: la firma è del BOSS con `scripts/firma-ricetta.sh` (gemello di
+  `firma-rilascio.sh`, chiave `mt-recipes-2026`, `--verifica` con la chiave pubblica incorporata);
+  `scripts/valida-ricetta.sh` e `cmd/mt-valida-ricetta` validano schema 0.11.0, forma canonica,
+  scadenza, `source` coerente, niente `latest` né `http://`. La CI valida ogni ricetta e verifica ogni
+  firma presente; `internal/catalog/recipes_repo_test.go` è il test di corrispondenza sulle ricette vere.
 - **`hello.agents`**: Claude Code, Codex e OpenCode rilevati nel `PATH`, nelle cartelle aggiunte con
   `catalog path-add` e nei percorsi noti, con la versione da `--version` (tetto 5 s, in parallelo). Si
   rifà a ogni `hello`.

@@ -37,6 +37,36 @@ jobs:
       - run: bash packaging/install_test.sh
       - run: dash scripts/firma-rilascio_test.sh
 
+  # Le ricette del catalogo (recipes/, ADR 0410 A4, lotto L4): ogni recipes/<id>/<ver>.json è valida
+  # contro lo schema 0.11.0, nei byte canonici che si firmano, con versioni fissate e source coerente;
+  # dove il BOSS ha già firmato (<ver>.json.sig) la firma si verifica con la chiave pubblica
+  # mt-recipes-2026. Gli script di validazione e firma hanno il loro banco (chiave usa e getta).
+  ricette:
+    name: "ricette del catalogo (schema, forma canonica, firme)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck devscripts dash jq
+      - run: shellcheck -s sh scripts/valida-ricetta.sh scripts/valida-ricetta_test.sh scripts/firma-ricetta.sh scripts/firma-ricetta_test.sh
+      - run: checkbashisms scripts/valida-ricetta.sh scripts/valida-ricetta_test.sh scripts/firma-ricetta.sh scripts/firma-ricetta_test.sh
+      - run: dash scripts/valida-ricetta_test.sh
+      - run: dash scripts/firma-ricetta_test.sh
+      - name: ogni ricetta è valida
+        run: sh scripts/valida-ricetta.sh recipes/*/*.json
+      - name: ogni firma presente è di mt-recipes-2026
+        run: |
+          n=0
+          for s in recipes/*/*.json.sig; do
+            [ -e "$s" ] || continue
+            f=${s%.sig}
+            sh scripts/firma-ricetta.sh "$(basename "$(dirname "$f")")" "$(basename "$f" .json)" --verifica
+            n=$((n + 1))
+          done
+          echo "firme verificate: $n"
+
   # Il banco con systemd (packaging/banco): il comando di una riga del cliente in un container
   # Ubuntu con systemd, rilascio locale firmato, backend finto; e l'aggiornamento automatico
   # (ADR 0438): update, ritorno alla versione precedente, i negativi. Pull delle immagini e build
