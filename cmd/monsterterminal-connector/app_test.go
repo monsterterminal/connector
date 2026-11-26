@@ -49,8 +49,9 @@ type harness struct {
 	stdout    *syncBuf
 	stderr    *syncBuf
 	boot      time.Time
-	panes     map[string]string // pannello tmux → sessione, per il comando hook
-	attached  bool              // un client collegato e attivo sulla sessione (finestra breve, §2.12)
+	panes     map[string]string       // pannello tmux → sessione, per il comando hook
+	attached  bool                    // un client collegato e attivo sulla sessione (finestra breve, §2.12)
+	agents    func() []protocol.Agent // agenti «rilevati» (§1.11); nil = nessuno
 }
 
 func newHarness(t *testing.T) *harness {
@@ -99,6 +100,14 @@ func (h *harness) app() app {
 			return "", errors.New("pannello sconosciuto")
 		},
 		sessionProbe: func(string) (bool, time.Time, bool) { return h.attached, time.Now(), true },
+		// Mai il rilevamento vero: gli agenti installati sulla macchina dei test cambierebbero hello.
+		detectAgents: func(string) []protocol.Agent {
+			if h.agents != nil {
+				return h.agents()
+			}
+			return []protocol.Agent{}
+		},
+		lookupVersion: func(string, string) (string, bool) { return "", false },
 	}
 }
 

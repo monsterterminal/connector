@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/catalog"
 	"github.com/monsterterminal/connector/internal/files"
 	"github.com/monsterterminal/connector/internal/hostconf"
 	"github.com/monsterterminal/connector/internal/hostinfo"
@@ -85,6 +86,13 @@ type app struct {
 	// updaterDir e trustedBase: la cartella dell'updater e l'antenato fidato; vuoti = quelli di
 	// produzione (<state>-updater e "/"). Solo i test li spostano in una cartella temporanea.
 	updaterDir, trustedBase string
+	// recipeKey è la chiave con cui si verificano le ricette del catalogo; nil = mt-recipes-2026
+	// incorporata (solo i test la sostituiscono).
+	recipeKey ed25519.PublicKey
+	// detectAgents rileva gli agenti dell'host per hello e dopo un'installazione; nil = il rilevamento
+	// vero (internal/agents.Detect). lookupVersion cerca un comando per i requires; nil = quello vero.
+	detectAgents  func(home string) []protocol.Agent
+	lookupVersion func(home, name string) (string, bool)
 }
 
 func defaultApp() app {
@@ -132,6 +140,11 @@ func (a app) run(ctx context.Context, args []string) int {
 			_ = fs.Parse([]string{action})
 		}
 	}
+	if cmd == "catalog" {
+		// catalog path-add <cartella> | catalog extract <archivio> <cartella> (§1.9): li chiamano i
+		// passi run delle ricette, senza shell.
+		positional = catalogArgs(fs.Arg(0))
+	}
 	if cmd == "hook" {
 		// Chiamato da Claude Code: non deve mai bloccarlo né sporcare la sua uscita (spec §1.21).
 		if fs.NArg() == 1 {
@@ -162,6 +175,8 @@ func (a app) run(ctx context.Context, args []string) int {
 		fmt.Fprintln(a.stdout, version)
 	case "hooks":
 		err = a.cmdHooks(fs.Arg(0), *stateDir, *yes)
+	case "catalog":
+		err = a.cmdCatalog(fs.Args())
 	case "apply-update":
 		err = a.cmdApplyUpdate(log, *stateDir, *configFile, *serviceUser)
 	case "rollback-check":
@@ -190,7 +205,7 @@ func (a app) run(ctx context.Context, args []string) int {
 }
 
 func (a app) usage() {
-	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace|-check]|run [-config FILE]|version|hooks install [-yes]|hooks remove|apply-update|rollback-check [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
+	fmt.Fprintln(a.stderr, "uso: monsterterminal-connector register [-replace|-check]|run [-config FILE]|version|hooks install [-yes]|hooks remove|catalog path-add CARTELLA|catalog extract ARCHIVIO CARTELLA|apply-update|rollback-check [-server URL] [-token-file PERCORSO] [-state-dir CARTELLA]")
 }
 
 func (a app) client(timeout time.Duration) *http.Client {
@@ -341,11 +356,24 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 	// DragMeHere (ADR 0409 A1.5): i file arrivano solo in ~/dragmehere dell'utente di servizio. Senza home
 	// leggibile il ricevitore non c'è e il backend riceve TYPE_UNKNOWN.
 	var recv transport.Files
-	if home, err := a.home(); err == nil && home != "" {
+	home, herr := a.home()
+	if herr == nil && home != "" {
 		recv = files.New(files.Config{Home: home, Logger: log})
 	} else {
-		log.Warn("home dell'utente non trovata: DragMeHere spento su questo host", "errore", fmt.Sprint(err))
+		home = ""
+		log.Warn("home dell'utente non trovata: DragMeHere spento su questo host", "errore", fmt.Sprint(herr))
 	}
+	// Catalogo di ricette firmate (§1.9, ADR 0410 A4): verifica con la chiave delle ricette, esegue
+	// con l'utente del connettore, riporta progresso ed esito. Con catalog_install=no rifiuta ogni
+	// ricetta con disabled-on-host e non dichiara la capacità.
+	ccfg := catalog.Config{
+		StateDir: stateDir, Home: home, CatalogInstall: hc.CatalogInstall, Key: a.recipeKey,
+		Platform: catalog.HostPlatform{OS: "linux", Arch: hi.Arch, Distro: hi.Distro}, Root: hi.Root,
+		Journal: j, Detect: func() []protocol.Agent { return a.detect(home) },
+		LookupVersion: func(name string) (string, bool) { return a.lookup(home, name) },
+		Env:           func() []string { return catalogEnv(home) }, Logger: log, Now: a.now,
+	}
+	cat := catalog.New(ccfg)
 	// Aggiornamento automatico (ADR 0438 D3, D4): il gestore chiede, verifica e prepara nella sua
 	// cartella <state>/update; l'unità root applica. Il file locale è assoluto (D6).
 	ucfg := update.Config{
@@ -369,13 +397,15 @@ func (a app) cmdRun(ctx context.Context, log *slog.Logger, server, tokenFile, st
 		Requests:   requests,
 		Files:      recv,
 		Updates:    upd,
+		Catalog:    cat,
 		Now:        a.now,
 		Hello: func() protocol.Hello {
+			// Gli agenti si rilevano a ogni hello (§1.11): al più un tetto di --version, in parallelo.
 			return protocol.Hello{
 				ConnectorVersion: version, Protocol: protocol.Version, OS: "linux", Arch: hi.Arch,
-				RunAsUser: hi.User, RunAsRoot: hi.Root, Capabilities: a.capabilities(),
+				RunAsUser: hi.User, RunAsRoot: hi.Root, Capabilities: a.capabilities(hc.CatalogInstall),
 				AutoUpdateEnabled: hc.AutoUpdate, CatalogInstallEnabled: hc.CatalogInstall,
-				Agents: []protocol.Agent{},
+				Agents: a.detect(home),
 			}
 		},
 	}

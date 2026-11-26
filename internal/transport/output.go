@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/monsterterminal/connector/internal/agents"
+	"github.com/monsterterminal/connector/internal/catalog"
 	"github.com/monsterterminal/connector/internal/files"
 	"github.com/monsterterminal/connector/internal/protocol"
 	"github.com/monsterterminal/connector/internal/terminal"
@@ -53,6 +54,14 @@ type Files interface {
 // esiti e invia update.check; tratta update.available e update.none. nil = nessun aggiornamento.
 type Updates interface {
 	Attach(out update.Out)
+	Handle(env protocol.Envelope) bool
+	Detach()
+}
+
+// Catalog esegue le ricette firmate del catalogo (schemi 0.11.0, ADR 0410 A4): tratta catalog.install
+// e manda catalog.install.progress e catalog.install.result. nil = nessun catalogo (TYPE_UNKNOWN).
+type Catalog interface {
+	Attach(out catalog.Out)
 	Handle(env protocol.Envelope) bool
 	Detach()
 }

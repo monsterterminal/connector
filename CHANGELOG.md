@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.8.0 — in preparazione
+
+Non ancora rilasciata né firmata: il rilascio lo decide il Decisore a collaudo verde. Protocollo sempre
+1; il connettore implementa gli schemi 0.11.0 (ADR 0410 A4) e lo dichiara con `X-MonsterTerminal-Schema`.
+Solo aggiunte: un backend che non manda `catalog.install` non vede differenze, salvo `hello.agents`
+popolato.
+
+- **Catalogo di ricette firmate** (spec §1.9, ADR 0410 A4; `internal/catalog`). `catalog.install` porta
+  la ricetta nei byte firmati: il connettore verifica, nell'ordine e fermandosi al primo rifiuto,
+  `catalog_install` del file dell'host, la firma Ed25519 sui byte ricevuti con la chiave delle ricette
+  `mt-recipes-2026` (mai quella degli aggiornamenti), `expiresAt`, piattaforma (sistema, architettura,
+  distribuzione), root, `requires` con la versione minima, downgrade dal file di stato
+  `state-dir/catalog/<recipeId>.json` e un'installazione alla volta. Poi esegue i passi con l'utente del
+  connettore, senza shell, nella sua home: `run` (vettore di argomenti, `{work}` sostituito solo
+  all'inizio di un argomento) e `fetch` (solo https, tetto 256 MiB, sha256 verificato, file in
+  `state-dir/catalog/work/<installId>/`, rimossa a fine corsa). `catalog.install.progress` dopo ogni passo
+  (da 1), `catalog.install.result` con i motivi chiusi della 0.11.0 (`stepIndex` da 0, `detail`,
+  `logTail` ≤ 8 KiB); a esito `ok` file di stato aggiornato, evento `catalog.installed` nel giornale e
+  rilevamento degli agenti rifatto. Un esito non consegnato per una caduta si rimanda al collegamento
+  successivo.
+- **Capacità `catalog-install`** in `hello.capabilities`, solo con `catalog_install=yes`.
+- **`hello.agents`**: Claude Code, Codex e OpenCode rilevati nel `PATH`, nelle cartelle aggiunte con
+  `catalog path-add` e nei percorsi noti, con la versione da `--version` (tetto 5 s, in parallelo). Si
+  rifà a ogni `hello`.
+- **Sottocomandi delle ricette**: `catalog path-add <cartella>` (una riga idempotente in `~/.profile`) e
+  `catalog extract <archivio> <cartella>` (tar.gz o zip, senza shell, nessuna voce fuori dalla
+  cartella, niente symlink che escono, tetto di 1 GiB). Le cartelle relative si intendono dalla home
+  dell'utente del connettore.
+- `mt-fakeserver`: comando `catalog.install` e progresso, esiti ed eventi del catalogo nello status-file.
+
 ## v0.7.1 — 2026-11-23
 
 Ottavo rilascio firmato (chiave `mt-updates-2026`). Protocollo 1 e schemi 0.10.0 invariati;
